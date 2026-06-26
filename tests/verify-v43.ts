@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { executeSkill, listSkills } from "../skill-system";
 import { routeSkillStep } from "../agent-core/skillRouter";
 import { selectSkill } from "../agent-core/skillSelector";
@@ -11,6 +13,39 @@ type TestResult = {
 };
 
 const results: TestResult[] = [];
+
+function loadLocalEnv(): void {
+  const envPath = resolve(process.cwd(), ".env");
+
+  if (!existsSync(envPath)) {
+    return;
+  }
+
+  const content = readFileSync(envPath, "utf8");
+
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    const separatorIndex = trimmed.indexOf("=");
+
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const key = trimmed.slice(0, separatorIndex).trim();
+    const value = trimmed.slice(separatorIndex + 1).trim().replace(/^["']|["']$/g, "");
+
+    if (key && process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
+loadLocalEnv();
 
 function record(status: TestStatus, name: string, details?: string): void {
   results.push({ name, status, details });
