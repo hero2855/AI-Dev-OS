@@ -20,6 +20,12 @@ export {
 export { executeSkill } from "./executor";
 export { defaultSkills } from "./skills";
 export { loadGitHubSkill } from "./github/loader";
-export { loadGitHubSkillManifest, loadGitHubSkillManifestIndex } from "./github/manifestLoader";
+export {
+  assertManifestMatchesLock,
+  getSkillManifestLock,
+  loadGitHubSkillManifest,
+  loadGitHubSkillManifestIndex,
+} from "./github/manifestLoader";
+export { assertSha256Integrity, sha256Text, verifySha256Integrity } from "./github/integrity";
 export { TRUSTED_GITHUB_SKILL_REPOS, isTrustedRepo } from "./github/trustedRepos";
 export { mockGitHubSkills, selectMockGitHubSkill };

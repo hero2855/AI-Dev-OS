@@ -1,0 +1,27 @@
+{
+  "trustedRepo": "https://github.com/hero2855/AI-Dev-OS-skills",
+  "index": {
+    "path": "skills/index.json",
+    "sha256": "088b3460b546eadc6a05544976fc754eede912a9904b16ef684a2f688f0d0e04"
+  },
+  "skills": [
+    {
+      "name": "github-search-skill",
+      "version": "0.1.0",
+      "path": "skills/github-search/skill.json",
+      "sha256": "479374c7381664a3ee5f7da5fdfcfd1598b4638e37e3991f1d986e574a36fac5"
+    },
+    {
+      "name": "auto-readme-generator",
+      "version": "0.1.0",
+      "path": "skills/readme-generator/skill.json",
+      "sha256": "b26e2066e0f24751db0d8b1042ad283dc9a86b1c71face1cdecbcb3f4f56a4f0"
+    },
+    {
+      "name": "code-refactor-skill",
+      "version": "0.1.0",
+      "path": "skills/code-refactor/skill.json",
+      "sha256": "ff6e01e376d5156a7d64daea7e386dc496360d46417cacebcf43632dbcf2d602"
+    }
+  ]
+}

@@ -1,11 +1,42 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { validateGitHubSkillManifest, type GitHubSkillManifest } from "./manifest";
+import { assertSha256Integrity } from "./integrity";
 import { isTrustedRepo } from "./trustedRepos";
 
 const DEFAULT_BRANCH = "main";
-const MANIFEST_INDEX_PATH = "skills/index.json";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const lockPath = join(__dirname, "skill-manifest-lock.json");
+
+export type SkillManifestLockEntry = {
+  name: string;
+  version: string;
+  path: string;
+  sha256: string;
+};
+
+export type SkillManifestLock = {
+  trustedRepo: string;
+  index: {
+    path: string;
+    sha256: string;
+  };
+  skills: SkillManifestLockEntry[];
+};
 
 function normalizeRepoUrl(repoUrl: string): string {
   return repoUrl.trim().replace(/\/$/, "");
+}
+
+function loadSkillManifestLock(): SkillManifestLock {
+  try {
+    return JSON.parse(readFileSync(lockPath, "utf8")) as SkillManifestLock;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to load skill manifest lock: ${message}`);
+  }
 }
 
 function getRawBaseUrl(repoUrl: string): string {
@@ -25,7 +56,7 @@ function joinRawUrl(baseUrl: string, path: string): string {
   return `${baseUrl}/${safePath}`;
 }
 
-async function fetchJson(url: string, label: string): Promise<unknown> {
+async function fetchText(url: string, label: string): Promise<string> {
   let response: Response;
 
   try {
@@ -39,8 +70,12 @@ async function fetchJson(url: string, label: string): Promise<unknown> {
     throw new Error(`Failed to fetch ${label}: HTTP ${response.status}`);
   }
 
+  return response.text();
+}
+
+function parseJson(text: string, label: string): unknown {
   try {
-    return await response.json();
+    return JSON.parse(text);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Invalid JSON in ${label}: ${message}`);
@@ -83,6 +118,33 @@ function extractManifestPaths(indexJson: unknown): string[] {
   throw new Error("Invalid manifest index: expected array or object");
 }
 
+function getLockedSkill(lock: SkillManifestLock, manifestPath: string): SkillManifestLockEntry {
+  const lockedSkill = lock.skills.find((skill) => skill.path === manifestPath);
+
+  if (!lockedSkill) {
+    throw new Error(`Manifest path is not locked: ${manifestPath}`);
+  }
+
+  return lockedSkill;
+}
+
+export function assertManifestMatchesLock(
+  manifest: GitHubSkillManifest,
+  lockedSkill: SkillManifestLockEntry,
+): void {
+  if (manifest.name !== lockedSkill.name) {
+    throw new Error(`Skill name mismatch for ${lockedSkill.path}`);
+  }
+
+  if (manifest.version !== lockedSkill.version) {
+    throw new Error(`Version mismatch for ${lockedSkill.name}`);
+  }
+}
+
+export function getSkillManifestLock(): SkillManifestLock {
+  return loadSkillManifestLock();
+}
+
 export async function loadGitHubSkillManifest(repoUrl: string): Promise<GitHubSkillManifest> {
   const manifests = await loadGitHubSkillManifestIndex(repoUrl);
   const [firstManifest] = manifests;
@@ -99,9 +161,19 @@ export async function loadGitHubSkillManifestIndex(repoUrl: string): Promise<Git
     throw new Error("Untrusted GitHub skill repo");
   }
 
+  const lock = loadSkillManifestLock();
+
+  if (normalizeRepoUrl(repoUrl) !== normalizeRepoUrl(lock.trustedRepo)) {
+    throw new Error("Trusted repo does not match skill manifest lock");
+  }
+
   const rawBaseUrl = getRawBaseUrl(repoUrl);
-  const indexUrl = joinRawUrl(rawBaseUrl, MANIFEST_INDEX_PATH);
-  const indexJson = await fetchJson(indexUrl, "GitHub skill manifest index");
+  const indexUrl = joinRawUrl(rawBaseUrl, lock.index.path);
+  const indexText = await fetchText(indexUrl, "GitHub skill manifest index");
+
+  assertSha256Integrity(indexText, lock.index.sha256, lock.index.path);
+
+  const indexJson = parseJson(indexText, "GitHub skill manifest index");
   const manifestPaths = extractManifestPaths(indexJson);
 
   if (manifestPaths.length === 0) {
@@ -111,11 +183,16 @@ export async function loadGitHubSkillManifestIndex(repoUrl: string): Promise<Git
   const manifests: GitHubSkillManifest[] = [];
 
   for (const manifestPath of manifestPaths) {
+    const lockedSkill = getLockedSkill(lock, manifestPath);
     const manifestUrl = joinRawUrl(rawBaseUrl, manifestPath);
-    const manifestJson = await fetchJson(manifestUrl, `GitHub skill manifest ${manifestPath}`);
+    const manifestText = await fetchText(manifestUrl, `GitHub skill manifest ${manifestPath}`);
+
+    assertSha256Integrity(manifestText, lockedSkill.sha256, manifestPath);
 
     try {
-      manifests.push(validateGitHubSkillManifest(manifestJson));
+      const manifest = validateGitHubSkillManifest(parseJson(manifestText, `GitHub skill manifest ${manifestPath}`));
+      assertManifestMatchesLock(manifest, lockedSkill);
+      manifests.push(manifest);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Invalid GitHub skill manifest ${manifestPath}: ${message}`);

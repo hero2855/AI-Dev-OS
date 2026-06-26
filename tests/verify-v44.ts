@@ -2,8 +2,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import {
+  assertManifestMatchesLock,
+  assertSha256Integrity,
   executeSkill,
   getSkill,
+  getSkillManifestLock,
   loadGitHubSkillManifestIndex,
   registerGitHubSkillsFromManifestIndex,
 } from "../skill-system";
@@ -85,35 +88,99 @@ async function getTrustedManifests(): Promise<GitHubSkillManifest[]> {
   return cachedManifests;
 }
 
-async function testTrustedRepoFetchesIndex(): Promise<string> {
+async function testTrustedRepoFetchesIndexWithIntegrity(): Promise<string> {
   const manifests = await getTrustedManifests();
+  const lock = getSkillManifestLock();
 
   assert(manifests.length > 0, "Trusted repo index returned no manifests");
+  assert(lock.index.path === "skills/index.json", `Unexpected locked index path: ${lock.index.path}`);
 
-  return `Fetched index with ${manifests.length} manifest entries`;
+  return `Fetched index and verified sha256 ${lock.index.sha256}`;
 }
 
-async function testTrustedRepoFetchesMultipleManifests(): Promise<string> {
+async function testTrustedRepoFetchesSkillManifestsWithIntegrity(): Promise<string> {
   const manifests = await getTrustedManifests();
   const names = manifests.map((manifest) => manifest.name).sort();
 
-  assert(manifests.length >= 3, `Expected at least 3 manifests, got ${manifests.length}`);
+  assert(manifests.length === 3, `Expected 3 manifests, got ${manifests.length}`);
 
-  return `Fetched manifests: ${names.join(", ")}`;
+  return `Fetched and verified manifests: ${names.join(", ")}`;
 }
 
-async function testAllManifestsPassSchemaValidation(): Promise<string> {
+async function testManifestVersionsMatchLock(): Promise<string> {
   const manifests = await getTrustedManifests();
+  const lock = getSkillManifestLock();
 
   for (const manifest of manifests) {
-    assert(manifest.name.trim().length > 0, "Manifest name is empty");
-    assert(manifest.version.trim().length > 0, `Manifest ${manifest.name} version is empty`);
-    assert(manifest.description.trim().length > 0, `Manifest ${manifest.name} description is empty`);
-    assert(Array.isArray(manifest.capabilities), `Manifest ${manifest.name} capabilities is not an array`);
-    assert(Array.isArray(manifest.permissions), `Manifest ${manifest.name} permissions is not an array`);
+    const lockedSkill = lock.skills.find((skill) => skill.name === manifest.name);
+    assert(lockedSkill, `Missing lock entry for ${manifest.name}`);
+    assert(manifest.version === lockedSkill.version, `Version mismatch for ${manifest.name}`);
   }
 
-  return `Validated ${manifests.length} manifests`;
+  return "All manifest versions match lock";
+}
+
+async function testManifestNamesMatchLock(): Promise<string> {
+  const manifests = await getTrustedManifests();
+  const lock = getSkillManifestLock();
+
+  for (const lockedSkill of lock.skills) {
+    assert(
+      manifests.some((manifest) => manifest.name === lockedSkill.name),
+      `Missing fetched manifest for locked skill ${lockedSkill.name}`,
+    );
+  }
+
+  return "All manifest names match lock";
+}
+
+async function testWrongShaFails(): Promise<string> {
+  try {
+    assertSha256Integrity("tampered manifest text", "0".repeat(64), "tampered-test");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    assert(message.includes("Integrity check failed for tampered-test"), `Unexpected error: ${message}`);
+    return "Wrong sha256 fails with integrity check failed";
+  }
+
+  throw new Error("Wrong sha256 did not fail");
+}
+
+async function testVersionMismatchFails(): Promise<string> {
+  const manifests = await getTrustedManifests();
+  const lock = getSkillManifestLock();
+  const [manifest] = manifests;
+  const lockedSkill = lock.skills.find((skill) => skill.name === manifest.name);
+
+  assert(lockedSkill, `Missing lock entry for ${manifest.name}`);
+
+  try {
+    assertManifestMatchesLock(
+      {
+        ...manifest,
+        version: "999.0.0",
+      },
+      lockedSkill,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    assert(message.includes("Version mismatch"), `Unexpected error: ${message}`);
+    return "Version mismatch fails";
+  }
+
+  throw new Error("Version mismatch did not fail");
+}
+
+async function testUntrustedRepoRejected(): Promise<string> {
+  try {
+    await loadGitHubSkillManifestIndex(untrustedRepo);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    assert(message === "Untrusted GitHub skill repo", `Unexpected error message: ${message}`);
+    return "Rejected untrusted repo with expected error";
+  }
+
+  throw new Error("Untrusted repo was not rejected");
 }
 
 async function testManifestSkillsBatchRegistration(): Promise<string> {
@@ -139,23 +206,11 @@ async function testManifestSkillExecutionPlaceholder(): Promise<string> {
 
   assert(output?.type === "github_skill_manifest_placeholder", "Unexpected manifest skill output type");
   assert(
-    message.includes("remote execution is disabled in V4.4.2"),
+    message.includes("remote execution is disabled in V4.4.3"),
     `Output did not clearly disable remote execution: ${JSON.stringify(output)}`,
   );
 
   return `Output: ${JSON.stringify(output)}`;
-}
-
-async function testUntrustedRepoRejected(): Promise<string> {
-  try {
-    await loadGitHubSkillManifestIndex(untrustedRepo);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    assert(message === "Untrusted GitHub skill repo", `Unexpected error message: ${message}`);
-    return "Rejected untrusted repo with expected error";
-  }
-
-  throw new Error("Untrusted repo was not rejected");
 }
 
 async function testV43StillPasses(): Promise<string> {
@@ -176,15 +231,18 @@ async function testV43StillPasses(): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  console.log("AI Dev OS V4.4.2 Verification");
+  console.log("AI Dev OS V4.4.3 Verification");
   console.log("");
 
-  await runTest("Trusted repo can fetch index.json", testTrustedRepoFetchesIndex);
-  await runTest("Trusted repo can fetch multiple skill.json manifests", testTrustedRepoFetchesMultipleManifests);
-  await runTest("All manifests pass schema validation", testAllManifestsPassSchemaValidation);
+  await runTest("Trusted repo fetches index.json with sha256 integrity", testTrustedRepoFetchesIndexWithIntegrity);
+  await runTest("Trusted repo fetches 3 skill.json files with sha256 integrity", testTrustedRepoFetchesSkillManifestsWithIntegrity);
+  await runTest("Manifest versions match lock", testManifestVersionsMatchLock);
+  await runTest("Manifest names match lock", testManifestNamesMatchLock);
+  await runTest("Wrong sha256 fails integrity check", testWrongShaFails);
+  await runTest("Version mismatch fails", testVersionMismatchFails);
+  await runTest("Untrusted repo is rejected", testUntrustedRepoRejected);
   await runTest("Manifest skills can batch register", testManifestSkillsBatchRegistration);
   await runTest("Manifest skill execution is placeholder only", testManifestSkillExecutionPlaceholder);
-  await runTest("Untrusted repo is rejected", testUntrustedRepoRejected);
   await runTest("V4.3 verification still passes", testV43StillPasses);
 
   const passed = results.filter((result) => result.status === "PASS").length;
