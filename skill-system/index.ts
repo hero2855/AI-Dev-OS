@@ -8,8 +8,11 @@ for (const skill of [...defaultSkills, ...mockGitHubSkills]) {
 
 export type { Skill, SkillName } from "./types";
 export type { GitHubSkill } from "./github/types";
-export { registerSkill, registerSkills, getSkill, listSkills } from "./registry";
+export type { GitHubSkillManifest } from "./github/manifest";
+export { registerSkill, registerSkills, registerGitHubSkillFromManifest, getSkill, listSkills } from "./registry";
 export { executeSkill } from "./executor";
 export { defaultSkills } from "./skills";
 export { loadGitHubSkill } from "./github/loader";
+export { loadGitHubSkillManifest } from "./github/manifestLoader";
+export { TRUSTED_GITHUB_SKILL_REPOS, isTrustedRepo } from "./github/trustedRepos";
 export { mockGitHubSkills, selectMockGitHubSkill };

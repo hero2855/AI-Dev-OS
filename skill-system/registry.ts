@@ -1,4 +1,5 @@
 import type { Skill, SkillName } from "./types";
+import type { GitHubSkillManifest } from "./github/manifest";
 
 const registry = new Map<string, Skill>();
 
@@ -13,6 +14,26 @@ export function registerSkill(skill: Skill): Skill {
 
 export function registerSkills(skills: Skill[]): Skill[] {
   return skills.map((skill) => registerSkill(skill));
+}
+
+export function registerGitHubSkillFromManifest(manifest: GitHubSkillManifest): Skill {
+  return registerSkill({
+    name: manifest.name,
+    description: manifest.description,
+    execute: async (input: any): Promise<{
+      type: "github_skill_manifest_placeholder";
+      skill: string;
+      input: any;
+      message: string;
+    }> => {
+      return {
+        type: "github_skill_manifest_placeholder",
+        skill: manifest.name,
+        input,
+        message: "GitHub skill manifest loaded but remote execution is disabled in V4.4.1",
+      };
+    },
+  });
 }
 
 export function getSkill(name: SkillName | string): Skill | undefined {

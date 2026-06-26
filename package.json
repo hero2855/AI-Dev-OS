@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "verify:v43": "tsx tests/verify-v43.ts"
+    "verify:v43": "tsx tests/verify-v43.ts",
+    "verify:v44": "tsx tests/verify-v44.ts"
   },
   "devDependencies": {
     "tsx": "^4.20.3",
