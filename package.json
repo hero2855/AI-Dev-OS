@@ -1,0 +1,13 @@
+{
+  "name": "ai-dev-os",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "verify:v43": "tsx tests/verify-v43.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}
