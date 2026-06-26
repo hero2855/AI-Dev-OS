@@ -4,9 +4,10 @@ import { resolve } from "node:path";
 import {
   executeSkill,
   getSkill,
-  loadGitHubSkillManifest,
-  registerGitHubSkillFromManifest,
+  loadGitHubSkillManifestIndex,
+  registerGitHubSkillsFromManifestIndex,
 } from "../skill-system";
+import type { GitHubSkillManifest } from "../skill-system";
 
 type TestStatus = "PASS" | "FAIL";
 
@@ -19,6 +20,7 @@ type TestResult = {
 const results: TestResult[] = [];
 const trustedRepo = "https://github.com/hero2855/AI-Dev-OS-skills";
 const untrustedRepo = "https://github.com/unknown/bad-skill";
+let cachedManifests: GitHubSkillManifest[] | null = null;
 
 function loadLocalEnv(): void {
   const envPath = resolve(process.cwd(), ".env");
@@ -75,21 +77,78 @@ function assert(condition: unknown, message: string): asserts condition {
   }
 }
 
-async function testTrustedRepoManifest(): Promise<string> {
-  const manifest = await loadGitHubSkillManifest(trustedRepo);
+async function getTrustedManifests(): Promise<GitHubSkillManifest[]> {
+  if (!cachedManifests) {
+    cachedManifests = await loadGitHubSkillManifestIndex(trustedRepo);
+  }
 
-  assert(manifest.name.trim().length > 0, "Manifest name is empty");
-  assert(manifest.version.trim().length > 0, "Manifest version is empty");
-  assert(manifest.description.trim().length > 0, "Manifest description is empty");
-  assert(Array.isArray(manifest.capabilities), "Manifest capabilities is not an array");
-  assert(Array.isArray(manifest.permissions), "Manifest permissions is not an array");
+  return cachedManifests;
+}
 
-  return `Loaded manifest: ${manifest.name}@${manifest.version}`;
+async function testTrustedRepoFetchesIndex(): Promise<string> {
+  const manifests = await getTrustedManifests();
+
+  assert(manifests.length > 0, "Trusted repo index returned no manifests");
+
+  return `Fetched index with ${manifests.length} manifest entries`;
+}
+
+async function testTrustedRepoFetchesMultipleManifests(): Promise<string> {
+  const manifests = await getTrustedManifests();
+  const names = manifests.map((manifest) => manifest.name).sort();
+
+  assert(manifests.length >= 3, `Expected at least 3 manifests, got ${manifests.length}`);
+
+  return `Fetched manifests: ${names.join(", ")}`;
+}
+
+async function testAllManifestsPassSchemaValidation(): Promise<string> {
+  const manifests = await getTrustedManifests();
+
+  for (const manifest of manifests) {
+    assert(manifest.name.trim().length > 0, "Manifest name is empty");
+    assert(manifest.version.trim().length > 0, `Manifest ${manifest.name} version is empty`);
+    assert(manifest.description.trim().length > 0, `Manifest ${manifest.name} description is empty`);
+    assert(Array.isArray(manifest.capabilities), `Manifest ${manifest.name} capabilities is not an array`);
+    assert(Array.isArray(manifest.permissions), `Manifest ${manifest.name} permissions is not an array`);
+  }
+
+  return `Validated ${manifests.length} manifests`;
+}
+
+async function testManifestSkillsBatchRegistration(): Promise<string> {
+  const manifests = await getTrustedManifests();
+  const skills = registerGitHubSkillsFromManifestIndex(manifests);
+
+  for (const manifest of manifests) {
+    assert(getSkill(manifest.name)?.name === manifest.name, `Manifest skill not registered: ${manifest.name}`);
+  }
+
+  return `Registered ${skills.length} manifest skills`;
+}
+
+async function testManifestSkillExecutionPlaceholder(): Promise<string> {
+  const manifests = await getTrustedManifests();
+  const [manifest] = manifests;
+
+  assert(manifest, "No manifest available for execution test");
+  registerGitHubSkillsFromManifestIndex(manifests);
+
+  const output = await executeSkill(manifest.name, "safe remote manifest placeholder test");
+  const message = String(output?.message || "");
+
+  assert(output?.type === "github_skill_manifest_placeholder", "Unexpected manifest skill output type");
+  assert(
+    message.includes("remote execution is disabled in V4.4.2"),
+    `Output did not clearly disable remote execution: ${JSON.stringify(output)}`,
+  );
+
+  return `Output: ${JSON.stringify(output)}`;
 }
 
 async function testUntrustedRepoRejected(): Promise<string> {
   try {
-    await loadGitHubSkillManifest(untrustedRepo);
+    await loadGitHubSkillManifestIndex(untrustedRepo);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     assert(message === "Untrusted GitHub skill repo", `Unexpected error message: ${message}`);
@@ -97,33 +156,6 @@ async function testUntrustedRepoRejected(): Promise<string> {
   }
 
   throw new Error("Untrusted repo was not rejected");
-}
-
-async function testManifestSkillRegistration(): Promise<string> {
-  const manifest = await loadGitHubSkillManifest(trustedRepo);
-  const skill = registerGitHubSkillFromManifest(manifest);
-  const registeredSkill = getSkill(manifest.name);
-
-  assert(skill.name === manifest.name, "Registered skill name does not match manifest");
-  assert(registeredSkill?.name === manifest.name, "Manifest skill is not available in registry");
-
-  return `Registered manifest skill: ${skill.name}`;
-}
-
-async function testManifestSkillExecutionPlaceholder(): Promise<string> {
-  const manifest = await loadGitHubSkillManifest(trustedRepo);
-  registerGitHubSkillFromManifest(manifest);
-
-  const output = await executeSkill(manifest.name, "safe manifest execution test");
-  const message = String(output?.message || "");
-
-  assert(output?.type === "github_skill_manifest_placeholder", "Unexpected manifest skill output type");
-  assert(
-    message.includes("remote execution is disabled in V4.4.1"),
-    `Output did not clearly disable remote execution: ${JSON.stringify(output)}`,
-  );
-
-  return `Output: ${JSON.stringify(output)}`;
 }
 
 async function testV43StillPasses(): Promise<string> {
@@ -144,13 +176,15 @@ async function testV43StillPasses(): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  console.log("AI Dev OS V4.4.1 Verification");
+  console.log("AI Dev OS V4.4.2 Verification");
   console.log("");
 
-  await runTest("Trusted repo can load manifest", testTrustedRepoManifest);
-  await runTest("Untrusted repo is rejected", testUntrustedRepoRejected);
-  await runTest("Manifest skill can register", testManifestSkillRegistration);
+  await runTest("Trusted repo can fetch index.json", testTrustedRepoFetchesIndex);
+  await runTest("Trusted repo can fetch multiple skill.json manifests", testTrustedRepoFetchesMultipleManifests);
+  await runTest("All manifests pass schema validation", testAllManifestsPassSchemaValidation);
+  await runTest("Manifest skills can batch register", testManifestSkillsBatchRegistration);
   await runTest("Manifest skill execution is placeholder only", testManifestSkillExecutionPlaceholder);
+  await runTest("Untrusted repo is rejected", testUntrustedRepoRejected);
   await runTest("V4.3 verification still passes", testV43StillPasses);
 
   const passed = results.filter((result) => result.status === "PASS").length;

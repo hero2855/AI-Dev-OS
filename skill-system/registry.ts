@@ -30,10 +30,14 @@ export function registerGitHubSkillFromManifest(manifest: GitHubSkillManifest): 
         type: "github_skill_manifest_placeholder",
         skill: manifest.name,
         input,
-        message: "GitHub skill manifest loaded but remote execution is disabled in V4.4.1",
+        message: "GitHub skill manifest loaded but remote execution is disabled in V4.4.2",
       };
     },
   });
+}
+
+export function registerGitHubSkillsFromManifestIndex(manifests: GitHubSkillManifest[]): Skill[] {
+  return manifests.map((manifest) => registerGitHubSkillFromManifest(manifest));
 }
 
 export function getSkill(name: SkillName | string): Skill | undefined {
