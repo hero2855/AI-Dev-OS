@@ -86,4 +86,12 @@ export {
   runProjectHealthCheck,
 } from "../project-health";
 export type { ProjectHealthCheckResult, ProjectHealthStatus, ProjectRuntime } from "../project-health";
+export { createSafeDevelopmentWorkflow, shouldBlockWorkflow } from "../development-workflow";
+export type {
+  DevelopmentWorkflowGuardInput,
+  DevelopmentWorkflowGuardResult,
+  DevelopmentWorkflowResult,
+  DevelopmentWorkflowStage,
+  DevelopmentWorkflowStatus,
+} from "../development-workflow";
 export { mockGitHubSkills, selectMockGitHubSkill };

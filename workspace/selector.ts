@@ -4,6 +4,25 @@ import type { ProjectRiskLevel, ProjectSelectionResult, WorkspaceProject } from 
 const selectionRules: Array<{ projectId: string; keywords: string[]; confidence: number }> = [
   {
     projectId: "project-001-resume-ai",
+    confidence: 0.86,
+    keywords: [
+      "product",
+      "product-app",
+      "next.js",
+      "nextjs",
+      "homepage",
+      "landing page",
+      "copy",
+      "src",
+      "code",
+      "产品",
+      "首页",
+      "文案",
+      "代码",
+    ],
+  },
+  {
+    projectId: "project-001-resume-ai",
     confidence: 0.9,
     keywords: ["resume", "cv", "jianli", "简历", "求职", "vercel", "付费版", "赚钱版"],
   },

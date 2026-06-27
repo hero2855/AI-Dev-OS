@@ -10,6 +10,7 @@
   },
   "include": [
     "agent-core/**/*.ts",
+    "development-workflow/**/*.ts",
     "project-health/**/*.ts",
     "skill-system/**/*.ts",
     "workspace/**/*.ts",

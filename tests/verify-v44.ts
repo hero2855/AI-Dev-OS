@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import {
   assertManifestMatchesLock,
   assertSha256Integrity,
+  createSafeDevelopmentWorkflow,
   createDryRunExecutionPlan,
   createDefaultSandboxConfig,
   executeSkill,
@@ -17,6 +18,7 @@ import {
   registerGitHubSkillsFromManifestIndex,
   runProjectHealthCheck,
   selectProjectForGoal,
+  shouldBlockWorkflow,
   validateSkillPolicy,
 } from "../skill-system";
 import type { GitHubSkillManifest, ProjectHealthCheckResult, WorkspaceProject } from "../skill-system";
@@ -437,6 +439,231 @@ async function testHealthCheckFakeProjectBlocked(): Promise<string> {
   assert(result.envFilesWereRead === false, "Fake project health check should not read env files");
 
   return "Fake project returned blocked";
+}
+
+async function testWorkflowSelectsResumeAiSampleGoal(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("优化简历 AI 首页");
+
+  assert(result.selectedProjectId === "project-001-resume-ai", `Unexpected selected project: ${result.selectedProjectId}`);
+
+  return `selectedProject=${result.selectedProjectId}`;
+}
+
+async function testWorkflowGeneratesResumeAiSampleResult(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("优化简历 AI 首页");
+
+  assert(result.goal === "优化简历 AI 首页", "Workflow result should preserve goal");
+  assert(["ready", "needs-approval", "needs-clarification", "blocked"].includes(result.status), `Unexpected status: ${result.status}`);
+  assert(result.currentStage !== undefined, "Workflow result should include current stage");
+
+  return `status=${result.status}, stage=${result.currentStage}`;
+}
+
+async function testWorkflowResumeAiDoesNotSelectCore(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("优化简历 AI 首页");
+
+  assert(result.selectedProjectId !== "ai-dev-os", "Resume AI sample workflow must not select AI Dev OS core");
+  assert(result.selectedProjectId === "project-001-resume-ai", `Unexpected selected project: ${result.selectedProjectId}`);
+
+  return `selectedProject=${result.selectedProjectId}`;
+}
+
+async function testWorkflowRunsHealthCheck(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("优化简历 AI 首页");
+
+  assert(typeof result.projectHealthStatus === "string", "Workflow should include project health status");
+
+  return `projectHealthStatus=${result.projectHealthStatus}`;
+}
+
+async function testWorkflowGeneratesDryRunSummary(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("优化简历 AI 首页");
+
+  assert(typeof result.dryRunSummary === "string" && result.dryRunSummary.length > 0, "Workflow should include dry-run summary");
+  assert(result.dryRunSummary.includes("Dry run only"), `Unexpected dry-run summary: ${result.dryRunSummary}`);
+
+  return result.dryRunSummary;
+}
+
+async function testWorkflowDoesNotModifyResumeAi(): Promise<string> {
+  const beforeRootExists = existsSync("D:\\Atlas-OS\\Projects\\Project-001-Resume-AI");
+  const result = createSafeDevelopmentWorkflow("优化简历 AI 首页");
+  const afterRootExists = existsSync("D:\\Atlas-OS\\Projects\\Project-001-Resume-AI");
+
+  assert(result.selectedProjectId === "project-001-resume-ai", "Workflow should use Resume AI sample project");
+  assert(beforeRootExists === afterRootExists, "Workflow changed Resume AI root path existence");
+
+  return "Project-001-Resume-AI root existence unchanged";
+}
+
+async function testWorkflowDoesNotReadOrModifyEnv(): Promise<string> {
+  const envPath = resolve(process.cwd(), ".env");
+  const beforeExists = existsSync(envPath);
+  const result = createSafeDevelopmentWorkflow("优化简历 AI 首页");
+  const afterExists = existsSync(envPath);
+
+  assert(result.safetySummary.includes("no env files read"), `Safety summary missing env read boundary: ${result.safetySummary}`);
+  assert(beforeExists === afterExists, ".env existence changed during workflow");
+
+  return "Workflow reports no env reads and .env existence is unchanged";
+}
+
+async function testWorkflowProtectsAiDevOsCore(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("继续开发 AI Dev OS sandbox");
+
+  assert(result.selectedProjectId === "ai-dev-os", `Unexpected selected project: ${result.selectedProjectId}`);
+  assert(
+    result.status === "needs-approval" || result.status === "needs-clarification",
+    `Protected AI Dev OS workflow should not be ready: ${result.status}`,
+  );
+  assert(result.requiresApproval === true, "Protected AI Dev OS workflow should require approval");
+
+  return `status=${result.status}`;
+}
+
+async function testWorkflowUnknownGoalNeedsClarification(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("make it better somehow");
+
+  assert(result.status === "needs-clarification", `Unknown workflow should need clarification, got ${result.status}`);
+  assert(result.currentStage === "project-selection", `Unexpected stage: ${result.currentStage}`);
+
+  return "Unknown target requires clarification";
+}
+
+async function testWorkflowBlocksEnvPlannedWrites(): Promise<string> {
+  const project = getWorkspaceProjectById("project-001-resume-ai");
+  assert(project, "Missing project-001-resume-ai");
+  const guard = shouldBlockWorkflow({
+    selectedProject: project,
+    dryRunPlan: {
+      riskLevel: "low",
+      blockedReasons: [],
+      plannedWrites: [".env"],
+    },
+  });
+
+  assert(guard.blocked === true, "Expected env planned write to be blocked");
+  assert(
+    guard.blockedReasons.includes("Workflow cannot write sensitive env files"),
+    `Missing env blocked reason: ${guard.blockedReasons.join(", ")}`,
+  );
+
+  return "Sensitive env planned write blocked";
+}
+
+async function testWorkflowBlocksPathEscapePlannedWrites(): Promise<string> {
+  const project = getWorkspaceProjectById("project-001-resume-ai");
+  assert(project, "Missing project-001-resume-ai");
+  const guard = shouldBlockWorkflow({
+    selectedProject: project,
+    dryRunPlan: {
+      riskLevel: "low",
+      blockedReasons: [],
+      plannedWrites: ["..\\AI-Dev-OS\\package.json"],
+    },
+  });
+
+  assert(guard.blocked === true, "Expected path escape planned write to be blocked");
+  assert(
+    guard.blockedReasons.includes("Workflow path escape detected"),
+    `Missing path escape blocked reason: ${guard.blockedReasons.join(", ")}`,
+  );
+
+  return "Path escape planned write blocked";
+}
+
+async function testWorkflowBlocksDryRunBlockedRisk(): Promise<string> {
+  const project = getWorkspaceProjectById("project-001-resume-ai");
+  assert(project, "Missing project-001-resume-ai");
+  const guard = shouldBlockWorkflow({
+    selectedProject: project,
+    dryRunPlan: {
+      riskLevel: "blocked",
+      blockedReasons: ["shell:execute is disabled before sandbox execution"],
+      plannedWrites: [],
+    },
+  });
+
+  assert(guard.blocked === true, "Expected blocked dry-run risk to block workflow");
+  assert(
+    guard.blockedReasons.includes("shell:execute is disabled before sandbox execution"),
+    `Missing dry-run blocked reason: ${guard.blockedReasons.join(", ")}`,
+  );
+
+  return "Blocked dry-run risk blocks workflow";
+}
+
+async function testWorkflowSafetySummary(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("优化简历 AI 首页");
+
+  for (const phrase of ["no files modified", "no env files read", "no remote code executed"]) {
+    assert(result.safetySummary.includes(phrase), `Safety summary missing phrase: ${phrase}`);
+  }
+
+  return result.safetySummary;
+}
+
+async function testWorkflowDoesNotExecuteShell(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("重构某个产品项目的 src 代码");
+
+  assert(result.safetySummary.includes("no shell/network/browser execution"), "Workflow should not execute shell");
+
+  return "Workflow reports no shell execution";
+}
+
+async function testWorkflowDoesNotExecuteNetwork(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("更新 skill manifest repo");
+
+  assert(result.safetySummary.includes("no shell/network/browser execution"), "Workflow should not execute network");
+
+  return "Workflow reports no network execution";
+}
+
+async function testWorkflowDoesNotExecuteBrowser(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("为一个 Next.js 产品优化首页文案");
+
+  assert(result.safetySummary.includes("no shell/network/browser execution"), "Workflow should not execute browser");
+
+  return "Workflow reports no browser execution";
+}
+
+async function testWorkflowGenericNextProductGoal(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("为一个 Next.js 产品优化首页文案");
+
+  assert(result.selectedProjectId === "project-001-resume-ai", `Unexpected selected project: ${result.selectedProjectId}`);
+  assert(result.dryRunSummary?.includes("Dry run only"), "Generic product workflow should generate dry-run summary");
+
+  return `selectedProject=${result.selectedProjectId}, status=${result.status}`;
+}
+
+async function testWorkflowGenericProductRefactorGoal(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("重构某个产品项目的 src 代码");
+
+  assert(result.selectedProjectId === "project-001-resume-ai", `Unexpected selected project: ${result.selectedProjectId}`);
+  assert(result.plannedWrites.includes("src/**"), `Expected src/** planned write, got ${result.plannedWrites.join(", ")}`);
+
+  return `plannedWrites=${result.plannedWrites.join(", ")}`;
+}
+
+async function testWorkflowSkillManifestRepoGoal(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("更新 skill manifest repo");
+
+  assert(result.selectedProjectId === "ai-dev-os-skills", `Unexpected selected project: ${result.selectedProjectId}`);
+  assert(
+    result.status === "needs-approval" || result.status === "needs-clarification",
+    `Protected skill manifest repo workflow should not be ready: ${result.status}`,
+  );
+
+  return `selectedProject=${result.selectedProjectId}, status=${result.status}`;
+}
+
+async function testWorkflowAiDevOsSandboxGoal(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("继续开发 AI Dev OS sandbox");
+
+  assert(result.selectedProjectId === "ai-dev-os", `Unexpected selected project: ${result.selectedProjectId}`);
+  assert(result.requiresApproval === true, "AI Dev OS sandbox workflow should require approval");
+
+  return `selectedProject=${result.selectedProjectId}, status=${result.status}`;
 }
 
 async function testLegalPermissionsPass(): Promise<string> {
@@ -972,6 +1199,26 @@ async function main(): Promise<void> {
   console.log("AI Dev OS V4.4.6 Verification");
   console.log("");
 
+  await runTest("Safe Development Workflow selects Resume AI sample goal", testWorkflowSelectsResumeAiSampleGoal);
+  await runTest("Safe Development Workflow generates workflow result", testWorkflowGeneratesResumeAiSampleResult);
+  await runTest("Safe Development Workflow does not select AI Dev OS for Resume AI sample", testWorkflowResumeAiDoesNotSelectCore);
+  await runTest("Safe Development Workflow runs project health check", testWorkflowRunsHealthCheck);
+  await runTest("Safe Development Workflow generates dry-run summary", testWorkflowGeneratesDryRunSummary);
+  await runTest("Safe Development Workflow does not modify Project-001-Resume-AI", testWorkflowDoesNotModifyResumeAi);
+  await runTest("Safe Development Workflow does not read or modify .env", testWorkflowDoesNotReadOrModifyEnv);
+  await runTest("Safe Development Workflow protects AI Dev OS core", testWorkflowProtectsAiDevOsCore);
+  await runTest("Safe Development Workflow unknown target needs clarification", testWorkflowUnknownGoalNeedsClarification);
+  await runTest("Safe Development Workflow blocks .env planned writes", testWorkflowBlocksEnvPlannedWrites);
+  await runTest("Safe Development Workflow blocks path escape planned writes", testWorkflowBlocksPathEscapePlannedWrites);
+  await runTest("Safe Development Workflow blocks dry-run blocked risk", testWorkflowBlocksDryRunBlockedRisk);
+  await runTest("Safe Development Workflow safety summary is explicit", testWorkflowSafetySummary);
+  await runTest("Safe Development Workflow does not execute shell", testWorkflowDoesNotExecuteShell);
+  await runTest("Safe Development Workflow does not execute network", testWorkflowDoesNotExecuteNetwork);
+  await runTest("Safe Development Workflow does not execute browser", testWorkflowDoesNotExecuteBrowser);
+  await runTest("Safe Development Workflow supports generic Next.js product goal", testWorkflowGenericNextProductGoal);
+  await runTest("Safe Development Workflow supports generic product refactor goal", testWorkflowGenericProductRefactorGoal);
+  await runTest("Safe Development Workflow supports skill manifest repo goal", testWorkflowSkillManifestRepoGoal);
+  await runTest("Safe Development Workflow supports AI Dev OS sandbox goal", testWorkflowAiDevOsSandboxGoal);
   await runTest("Project Health Check can inspect ai-dev-os", testHealthCheckAiDevOs);
   await runTest("Project Health Check can inspect Project-001-Resume-AI without modification", testHealthCheckResumeAiDoesNotModify);
   await runTest("Project Health Check includes protected warning for ai-dev-os", testHealthCheckProtectedWarning);
