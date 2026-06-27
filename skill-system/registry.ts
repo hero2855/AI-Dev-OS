@@ -30,7 +30,7 @@ export function registerGitHubSkillFromManifest(manifest: GitHubSkillManifest): 
         type: "github_skill_manifest_placeholder",
         skill: manifest.name,
         input,
-        message: "GitHub skill manifest loaded but remote execution is disabled in V4.4.3",
+        message: "GitHub skill manifest loaded but remote execution is disabled in V4.4.4",
       };
     },
   });

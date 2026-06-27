@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { validateGitHubSkillManifest, type GitHubSkillManifest } from "./manifest";
 import { assertSha256Integrity } from "./integrity";
 import { isTrustedRepo } from "./trustedRepos";
+import { validateSkillPolicy } from "../policy/policy";
 
 const DEFAULT_BRANCH = "main";
 const __filename = fileURLToPath(import.meta.url);
@@ -192,6 +193,7 @@ export async function loadGitHubSkillManifestIndex(repoUrl: string): Promise<Git
     try {
       const manifest = validateGitHubSkillManifest(parseJson(manifestText, `GitHub skill manifest ${manifestPath}`));
       assertManifestMatchesLock(manifest, lockedSkill);
+      validateSkillPolicy(manifest);
       manifests.push(manifest);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

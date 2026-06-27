@@ -9,6 +9,7 @@ import {
   getSkillManifestLock,
   loadGitHubSkillManifestIndex,
   registerGitHubSkillsFromManifestIndex,
+  validateSkillPolicy,
 } from "../skill-system";
 import type { GitHubSkillManifest } from "../skill-system";
 
@@ -80,12 +81,99 @@ function assert(condition: unknown, message: string): asserts condition {
   }
 }
 
+function createPolicyTestManifest(overrides: Partial<GitHubSkillManifest> = {}): GitHubSkillManifest {
+  return {
+    name: "policy-test-skill",
+    version: "0.1.0",
+    description: "Policy test skill",
+    entry: "index.ts",
+    capabilities: ["github_search"],
+    permissions: ["network:github"],
+    ...overrides,
+  };
+}
+
+function expectPolicyError(manifest: GitHubSkillManifest, expectedMessage: string): string {
+  try {
+    validateSkillPolicy(manifest);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    assert(message === expectedMessage, `Unexpected error message: ${message}`);
+    return message;
+  }
+
+  throw new Error(`Expected policy error: ${expectedMessage}`);
+}
+
 async function getTrustedManifests(): Promise<GitHubSkillManifest[]> {
   if (!cachedManifests) {
     cachedManifests = await loadGitHubSkillManifestIndex(trustedRepo);
   }
 
   return cachedManifests;
+}
+
+async function testLegalPermissionsPass(): Promise<string> {
+  validateSkillPolicy(createPolicyTestManifest());
+  return "Known permissions satisfy declared capabilities";
+}
+
+async function testUnknownPermissionFails(): Promise<string> {
+  const message = expectPolicyError(
+    createPolicyTestManifest({
+      permissions: ["network:github", "network:anywhere"],
+    }),
+    "Unknown skill permission: network:anywhere",
+  );
+
+  return message;
+}
+
+async function testUnknownCapabilityFails(): Promise<string> {
+  const message = expectPolicyError(
+    createPolicyTestManifest({
+      capabilities: ["github_search", "unknown_capability"],
+    }),
+    "Unknown skill capability: unknown_capability",
+  );
+
+  return message;
+}
+
+async function testMissingRequiredPermissionFails(): Promise<string> {
+  const message = expectPolicyError(
+    createPolicyTestManifest({
+      capabilities: ["readme_generation"],
+      permissions: ["file:read"],
+    }),
+    "Capability readme_generation requires permission file:write:docs",
+  );
+
+  return message;
+}
+
+async function testShellExecuteDisabled(): Promise<string> {
+  const message = expectPolicyError(
+    createPolicyTestManifest({
+      capabilities: ["shell_execute"],
+      permissions: ["shell:execute"],
+    }),
+    "Permission shell:execute is disabled in V4.4.4",
+  );
+
+  return message;
+}
+
+async function testBrowserWriteDisabled(): Promise<string> {
+  const message = expectPolicyError(
+    createPolicyTestManifest({
+      capabilities: ["browser_write"],
+      permissions: ["browser:write"],
+    }),
+    "Permission browser:write is disabled in V4.4.4",
+  );
+
+  return message;
 }
 
 async function testTrustedRepoFetchesIndexWithIntegrity(): Promise<string> {
@@ -132,6 +220,18 @@ async function testManifestNamesMatchLock(): Promise<string> {
   }
 
   return "All manifest names match lock";
+}
+
+async function testTrustedRepoManifestsPassPolicy(): Promise<string> {
+  const manifests = await getTrustedManifests();
+
+  assert(manifests.length === 3, `Expected 3 manifests, got ${manifests.length}`);
+
+  for (const manifest of manifests) {
+    validateSkillPolicy(manifest);
+  }
+
+  return "Trusted repo manifests pass policy validation";
 }
 
 async function testWrongShaFails(): Promise<string> {
@@ -206,7 +306,7 @@ async function testManifestSkillExecutionPlaceholder(): Promise<string> {
 
   assert(output?.type === "github_skill_manifest_placeholder", "Unexpected manifest skill output type");
   assert(
-    message.includes("remote execution is disabled in V4.4.3"),
+    message.includes("remote execution is disabled in V4.4.4"),
     `Output did not clearly disable remote execution: ${JSON.stringify(output)}`,
   );
 
@@ -231,13 +331,20 @@ async function testV43StillPasses(): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  console.log("AI Dev OS V4.4.3 Verification");
+  console.log("AI Dev OS V4.4.4 Verification");
   console.log("");
 
+  await runTest("Legal permissions can pass policy validation", testLegalPermissionsPass);
+  await runTest("Unknown permission fails policy validation", testUnknownPermissionFails);
+  await runTest("Unknown capability fails policy validation", testUnknownCapabilityFails);
+  await runTest("Capability missing required permission fails", testMissingRequiredPermissionFails);
+  await runTest("shell:execute is disabled in V4.4.4", testShellExecuteDisabled);
+  await runTest("browser:write is disabled in V4.4.4", testBrowserWriteDisabled);
   await runTest("Trusted repo fetches index.json with sha256 integrity", testTrustedRepoFetchesIndexWithIntegrity);
   await runTest("Trusted repo fetches 3 skill.json files with sha256 integrity", testTrustedRepoFetchesSkillManifestsWithIntegrity);
   await runTest("Manifest versions match lock", testManifestVersionsMatchLock);
   await runTest("Manifest names match lock", testManifestNamesMatchLock);
+  await runTest("Trusted repo manifests pass policy validation", testTrustedRepoManifestsPassPolicy);
   await runTest("Wrong sha256 fails integrity check", testWrongShaFails);
   await runTest("Version mismatch fails", testVersionMismatchFails);
   await runTest("Untrusted repo is rejected", testUntrustedRepoRejected);

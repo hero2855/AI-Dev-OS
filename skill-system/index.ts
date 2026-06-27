@@ -28,4 +28,8 @@ export {
 } from "./github/manifestLoader";
 export { assertSha256Integrity, sha256Text, verifySha256Integrity } from "./github/integrity";
 export { TRUSTED_GITHUB_SKILL_REPOS, isTrustedRepo } from "./github/trustedRepos";
+export { validateSkillPolicy } from "./policy/policy";
+export { requiredPermissionsForCapability, assertCapabilitiesAllowedByPermissions } from "./policy/capabilityGuard";
+export { assertKnownPermissions, isKnownPermission, allowedSkillPermissions } from "./policy/permissions";
+export type { SkillPermission } from "./policy/permissions";
 export { mockGitHubSkills, selectMockGitHubSkill };
