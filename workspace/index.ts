@@ -13,3 +13,5 @@ export {
 } from "./pathGuard";
 export { selectProjectForGoal } from "./selector";
 export { createWorkspaceManager } from "./workspaceManager";
+export { runProjectHealthCheck } from "../project-health";
+export type { ProjectHealthCheckResult, ProjectHealthStatus, ProjectRuntime } from "../project-health";

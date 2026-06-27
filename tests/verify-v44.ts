@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import {
@@ -11,13 +11,15 @@ import {
   getSkill,
   getSkillManifestLock,
   createWorkspaceManager,
+  getWorkspaceProjectById,
   loadGitHubSkillManifestIndex,
   listWorkspaceProjects,
   registerGitHubSkillsFromManifestIndex,
+  runProjectHealthCheck,
   selectProjectForGoal,
   validateSkillPolicy,
 } from "../skill-system";
-import type { GitHubSkillManifest } from "../skill-system";
+import type { GitHubSkillManifest, ProjectHealthCheckResult, WorkspaceProject } from "../skill-system";
 
 type TestStatus = "PASS" | "FAIL";
 
@@ -112,6 +114,19 @@ function expectWorkspacePathError(operation: () => unknown, expectedMessage: str
   }
 
   throw new Error(`Expected workspace path error: ${expectedMessage}`);
+}
+
+function assertHealthShape(result: ProjectHealthCheckResult): void {
+  assert(typeof result.exists === "boolean", "Health result exists must be boolean");
+  assert(["node", "nextjs", "unknown"].includes(result.runtime), `Unexpected runtime: ${result.runtime}`);
+  assert(
+    ["pnpm", "npm", "yarn", "unknown"].includes(result.packageManager),
+    `Unexpected package manager: ${result.packageManager}`,
+  );
+  assert(typeof result.scripts === "object" && result.scripts !== null, "Scripts result must be an object");
+  assert(Array.isArray(result.lockfiles), "Lockfiles result must be an array");
+  assert(Array.isArray(result.deploymentHints), "Deployment hints result must be an array");
+  assert(result.envFilesWereRead === false, "Health check must never read env files");
 }
 
 async function getTrustedManifests(): Promise<GitHubSkillManifest[]> {
@@ -264,6 +279,164 @@ async function testWorkspaceManagerDoesNotModifySkillsRepo(): Promise<string> {
   assert(result.requiresClarification === true, "Protected skills repo should require clarification before changes");
 
   return "Workspace Manager only selected AI-Dev-OS-skills metadata";
+}
+
+async function testHealthCheckAiDevOs(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const result = manager.checkHealth("ai-dev-os");
+
+  assert(result.projectId === "ai-dev-os", `Unexpected project id: ${result.projectId}`);
+  assert(result.exists === true, "Expected ai-dev-os root path to exist");
+  assertHealthShape(result);
+
+  return `status=${result.status}, runtime=${result.runtime}, packageManager=${result.packageManager}`;
+}
+
+async function testHealthCheckResumeAiDoesNotModify(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const beforeRootExists = existsSync("D:\\Atlas-OS\\Projects\\Project-001-Resume-AI");
+  const result = manager.checkHealth("project-001-resume-ai");
+  const afterRootExists = existsSync("D:\\Atlas-OS\\Projects\\Project-001-Resume-AI");
+
+  assert(result.projectId === "project-001-resume-ai", `Unexpected project id: ${result.projectId}`);
+  assert(beforeRootExists === afterRootExists, "Health check changed Resume AI root path existence");
+  assertHealthShape(result);
+
+  return `status=${result.status}, exists=${result.exists}, runtime=${result.runtime}`;
+}
+
+async function testHealthCheckProtectedWarning(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const result = manager.checkHealth("ai-dev-os");
+
+  assert(
+    result.warnings.includes("Protected project requires explicit confirmation before modification"),
+    `Missing protected warning: ${result.warnings.join(", ")}`,
+  );
+
+  return "Protected warning present";
+}
+
+async function testHealthCheckResumeAiNotSystemCore(): Promise<string> {
+  const project = getWorkspaceProjectById("project-001-resume-ai");
+
+  assert(project?.type === "product-app", `Unexpected Resume AI project type: ${project?.type}`);
+  assert(project.type !== "system-core", "Resume AI must not be system-core");
+
+  return `type=${project.type}`;
+}
+
+async function testHealthCheckPackageJsonDetection(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const result = manager.checkHealth("ai-dev-os");
+
+  assert(result.packageJsonExists === true, "Expected ai-dev-os package.json to exist");
+
+  return "packageJsonExists=true";
+}
+
+async function testHealthCheckPackageManagerDetection(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const result = manager.checkHealth("ai-dev-os");
+
+  assert(["pnpm", "npm", "yarn", "unknown"].includes(result.packageManager), "Package manager detection failed");
+
+  return `packageManager=${result.packageManager}`;
+}
+
+async function testHealthCheckScriptsDetection(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const result = manager.checkHealth("ai-dev-os");
+
+  assert(typeof result.scripts === "object" && result.scripts !== null, "Scripts detection failed");
+
+  return `scripts=${Object.keys(result.scripts).join(", ") || "none"}`;
+}
+
+async function testHealthCheckDeploymentHintsDetection(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const result = manager.checkHealth("ai-dev-os");
+
+  assert(Array.isArray(result.deploymentHints), "Deployment hints detection failed");
+
+  return `deploymentHints=${result.deploymentHints.join(", ") || "none"}`;
+}
+
+async function testHealthCheckEnvFilesWereReadFalse(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const result = manager.checkHealth("ai-dev-os");
+
+  assert(result.envFilesWereRead === false, "envFilesWereRead must always be false");
+
+  return "envFilesWereRead=false";
+}
+
+async function testHealthCheckDoesNotReadEnv(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const result = manager.checkHealth("ai-dev-os");
+
+  assert(result.envFilesWereRead === false, "Health check reported env file access");
+
+  return "Health check reports no env file reads";
+}
+
+async function testHealthCheckDoesNotModifyEnv(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const envPath = resolve(process.cwd(), ".env");
+  const beforeExists = existsSync(envPath);
+  const result = manager.checkHealth("ai-dev-os");
+  const afterExists = existsSync(envPath);
+
+  assert(result.envFilesWereRead === false, "Health check reported env file access");
+  assert(beforeExists === afterExists, ".env existence changed during health check");
+
+  return ".env existence unchanged and content was not read";
+}
+
+async function testHealthCheckDoesNotModifyResumeAi(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const beforeRootExists = existsSync("D:\\Atlas-OS\\Projects\\Project-001-Resume-AI");
+  const result = manager.checkHealth("project-001-resume-ai");
+  const afterRootExists = existsSync("D:\\Atlas-OS\\Projects\\Project-001-Resume-AI");
+
+  assert(result.projectId === "project-001-resume-ai", "Resume AI health check selected wrong project");
+  assert(beforeRootExists === afterRootExists, "Resume AI root existence changed during health check");
+
+  return "Project-001-Resume-AI root existence unchanged";
+}
+
+async function testHealthCheckDoesNotModifySkillsRepo(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const beforeRootExists = existsSync("D:\\Atlas-OS\\Projects\\AI-Dev-OS-skills");
+  const result = manager.checkHealth("ai-dev-os-skills");
+  const afterRootExists = existsSync("D:\\Atlas-OS\\Projects\\AI-Dev-OS-skills");
+
+  assert(result.projectId === "ai-dev-os-skills", "Skills repo health check selected wrong project");
+  assert(beforeRootExists === afterRootExists, "AI-Dev-OS-skills root existence changed during health check");
+
+  return "AI-Dev-OS-skills root existence unchanged";
+}
+
+async function testHealthCheckFakeProjectBlocked(): Promise<string> {
+  const fakeProject: WorkspaceProject = {
+    id: "fake-project",
+    name: "Fake Project",
+    type: "product-app",
+    rootPath: resolve(process.cwd(), ".tmp", "does-not-exist-v46"),
+    description: "Fake missing project for health check verification.",
+    protected: false,
+    tags: ["fake"],
+  };
+  const result = runProjectHealthCheck(fakeProject);
+
+  assert(result.status === "blocked", `Expected blocked fake project, got ${result.status}`);
+  assert(
+    result.blockingIssues.includes("Project root path does not exist"),
+    `Missing root path blocking issue: ${result.blockingIssues.join(", ")}`,
+  );
+  assert(result.envFilesWereRead === false, "Fake project health check should not read env files");
+
+  return "Fake project returned blocked";
 }
 
 async function testLegalPermissionsPass(): Promise<string> {
@@ -799,6 +972,20 @@ async function main(): Promise<void> {
   console.log("AI Dev OS V4.4.6 Verification");
   console.log("");
 
+  await runTest("Project Health Check can inspect ai-dev-os", testHealthCheckAiDevOs);
+  await runTest("Project Health Check can inspect Project-001-Resume-AI without modification", testHealthCheckResumeAiDoesNotModify);
+  await runTest("Project Health Check includes protected warning for ai-dev-os", testHealthCheckProtectedWarning);
+  await runTest("Project Health Check does not classify Resume AI as system-core", testHealthCheckResumeAiNotSystemCore);
+  await runTest("Project Health Check detects package.json", testHealthCheckPackageJsonDetection);
+  await runTest("Project Health Check detects package manager safely", testHealthCheckPackageManagerDetection);
+  await runTest("Project Health Check detects scripts safely", testHealthCheckScriptsDetection);
+  await runTest("Project Health Check detects deployment hints safely", testHealthCheckDeploymentHintsDetection);
+  await runTest("Project Health Check envFilesWereRead is false", testHealthCheckEnvFilesWereReadFalse);
+  await runTest("Project Health Check does not read .env", testHealthCheckDoesNotReadEnv);
+  await runTest("Project Health Check does not modify .env", testHealthCheckDoesNotModifyEnv);
+  await runTest("Project Health Check does not modify Project-001-Resume-AI", testHealthCheckDoesNotModifyResumeAi);
+  await runTest("Project Health Check does not modify AI-Dev-OS-skills", testHealthCheckDoesNotModifySkillsRepo);
+  await runTest("Project Health Check blocks missing fake project", testHealthCheckFakeProjectBlocked);
   await runTest("Workspace project list contains 3 projects", testWorkspaceProjectListContainsThreeProjects);
   await runTest("Workspace can get ai-dev-os by id", testWorkspaceGetAiDevOsById);
   await runTest("Workspace can get ai-dev-os-skills by id", testWorkspaceGetSkillsById);

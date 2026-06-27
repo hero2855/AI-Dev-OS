@@ -74,4 +74,16 @@ export {
   selectProjectForGoal,
 } from "../workspace";
 export type { ProjectRiskLevel, ProjectSelectionResult, ProjectType, WorkspaceProject } from "../workspace";
+export {
+  detectDeploymentHints,
+  detectEnvExample,
+  detectLockfiles,
+  detectPackageManager,
+  detectRuntime,
+  detectScripts,
+  fileExists,
+  readJsonFileSafe,
+  runProjectHealthCheck,
+} from "../project-health";
+export type { ProjectHealthCheckResult, ProjectHealthStatus, ProjectRuntime } from "../project-health";
 export { mockGitHubSkills, selectMockGitHubSkill };
