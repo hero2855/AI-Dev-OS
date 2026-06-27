@@ -32,4 +32,12 @@ export { validateSkillPolicy } from "./policy/policy";
 export { requiredPermissionsForCapability, assertCapabilitiesAllowedByPermissions } from "./policy/capabilityGuard";
 export { assertKnownPermissions, isKnownPermission, allowedSkillPermissions } from "./policy/permissions";
 export type { SkillPermission } from "./policy/permissions";
+export { createDryRunExecutionPlan, assessDryRunRisk } from "./execution-plan";
+export type {
+  CreateDryRunExecutionPlanParams,
+  DryRunExecutionPlan,
+  DryRunRiskAssessment,
+  DryRunRiskLevel,
+  DryRunSkillMetadata,
+} from "./execution-plan";
 export { mockGitHubSkills, selectMockGitHubSkill };

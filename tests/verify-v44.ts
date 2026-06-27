@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import {
   assertManifestMatchesLock,
   assertSha256Integrity,
+  createDryRunExecutionPlan,
   executeSkill,
   getSkill,
   getSkillManifestLock,
@@ -105,6 +106,20 @@ function expectPolicyError(manifest: GitHubSkillManifest, expectedMessage: strin
   throw new Error(`Expected policy error: ${expectedMessage}`);
 }
 
+function assertRiskAtLeast(actual: string, expected: "low" | "medium" | "high" | "blocked"): void {
+  const rank = {
+    low: 1,
+    medium: 2,
+    high: 3,
+    blocked: 4,
+  };
+
+  assert(
+    rank[actual as keyof typeof rank] >= rank[expected],
+    `Expected risk at least ${expected}, got ${actual}`,
+  );
+}
+
 async function getTrustedManifests(): Promise<GitHubSkillManifest[]> {
   if (!cachedManifests) {
     cachedManifests = await loadGitHubSkillManifestIndex(trustedRepo);
@@ -174,6 +189,190 @@ async function testBrowserWriteDisabled(): Promise<string> {
   );
 
   return message;
+}
+
+async function testGithubSearchDryRunPlan(): Promise<string> {
+  const plan = createDryRunExecutionPlan({
+    goal: "search github repo for AI Dev OS skills",
+    skill: createPolicyTestManifest({
+      name: "github-search-skill",
+      capabilities: ["github_search", "repo_discovery"],
+      permissions: ["network:github"],
+    }),
+  });
+
+  assert(plan.mode === "dry-run", `Unexpected mode: ${plan.mode}`);
+  assert(plan.networkAccess === true, "Expected GitHub search to require network access");
+  assert(plan.plannedWrites.length === 0, `Expected no planned writes, got ${plan.plannedWrites.join(", ")}`);
+  assert(plan.riskLevel === "low", `Expected low risk, got ${plan.riskLevel}`);
+  assert(plan.requiresApproval === false, "Expected no approval requirement for read-only GitHub search");
+
+  return "GitHub search dry-run plan is low-risk and read-only";
+}
+
+async function testReadmeDryRunPlan(): Promise<string> {
+  const plan = createDryRunExecutionPlan({
+    goal: "write a README for this project",
+    skill: createPolicyTestManifest({
+      name: "auto-readme-generator",
+      capabilities: ["readme_generation", "docs_generation"],
+      permissions: ["file:read", "file:write:docs"],
+    }),
+  });
+
+  assert(plan.plannedReads.includes("README.md"), "Expected README.md planned read");
+  assert(plan.plannedReads.includes("package.json"), "Expected package.json planned read");
+  assert(plan.plannedWrites.includes("README.md"), "Expected README.md planned write");
+  assert(plan.requiresApproval === true, "Expected approval for docs write plan");
+
+  return "README dry-run plan includes docs reads and write approval";
+}
+
+async function testCodeRefactorDryRunPlan(): Promise<string> {
+  const plan = createDryRunExecutionPlan({
+    goal: "refactor source code safely",
+    skill: createPolicyTestManifest({
+      name: "code-refactor-skill",
+      capabilities: ["code_refactor", "source_editing"],
+      permissions: ["file:read", "file:write:src"],
+    }),
+  });
+
+  assert(plan.plannedReads.includes("src/**"), "Expected src/** planned read");
+  assert(plan.plannedWrites.includes("src/**"), "Expected src/** planned write");
+  assertRiskAtLeast(plan.riskLevel, "medium");
+  assert(plan.requiresApproval === true, "Expected approval for source write plan");
+
+  return "Code refactor dry-run plan requires approval and medium risk";
+}
+
+async function testShellExecuteDryRunBlocked(): Promise<string> {
+  const plan = createDryRunExecutionPlan({
+    goal: "run a shell command",
+    skill: createPolicyTestManifest({
+      name: "shell-runner-test",
+      capabilities: ["shell_execute"],
+      permissions: ["shell:execute"],
+    }),
+  });
+
+  assert(plan.riskLevel === "blocked", `Expected blocked risk, got ${plan.riskLevel}`);
+  assert(plan.requiresApproval === true, "Expected approval requirement for blocked shell execution");
+  assert(
+    plan.blockedReasons.includes("shell:execute is disabled before sandbox execution"),
+    `Missing shell blocked reason: ${plan.blockedReasons.join(", ")}`,
+  );
+
+  return "shell:execute dry-run plan is blocked";
+}
+
+async function testBrowserWriteDryRunBlocked(): Promise<string> {
+  const plan = createDryRunExecutionPlan({
+    goal: "write in a browser",
+    skill: createPolicyTestManifest({
+      name: "browser-writer-test",
+      capabilities: ["browser_write"],
+      permissions: ["browser:write"],
+    }),
+  });
+
+  assert(plan.riskLevel === "blocked", `Expected blocked risk, got ${plan.riskLevel}`);
+  assert(plan.requiresApproval === true, "Expected approval requirement for blocked browser write");
+  assert(
+    plan.blockedReasons.includes("browser:write is disabled before browser sandbox"),
+    `Missing browser blocked reason: ${plan.blockedReasons.join(", ")}`,
+  );
+
+  return "browser:write dry-run plan is blocked";
+}
+
+async function testUnknownSkillDryRunRequiresApproval(): Promise<string> {
+  const plan = createDryRunExecutionPlan({
+    goal: "plan an unknown skill safely",
+    skill: createPolicyTestManifest({
+      name: "unknown-skill",
+      capabilities: [],
+      permissions: [],
+    }),
+  });
+
+  assert(plan.plannedReads.length === 0, `Expected no planned reads, got ${plan.plannedReads.join(", ")}`);
+  assert(plan.plannedWrites.length === 0, `Expected no planned writes, got ${plan.plannedWrites.join(", ")}`);
+  assertRiskAtLeast(plan.riskLevel, "medium");
+  assert(plan.requiresApproval === true, "Expected approval requirement for unknown skill");
+
+  return "Unknown skill dry-run plan is conservative and requires approval";
+}
+
+async function testDryRunPlanDoesNotModifyFiles(): Promise<string> {
+  const before = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(before.status === 0, `git status before dry-run failed: ${before.stderr}`);
+
+  createDryRunExecutionPlan({
+    goal: "plan README update without writing",
+    skill: createPolicyTestManifest({
+      name: "auto-readme-generator",
+      capabilities: ["readme_generation", "docs_generation"],
+      permissions: ["file:read", "file:write:docs"],
+    }),
+  });
+
+  const after = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(after.status === 0, `git status after dry-run failed: ${after.stderr}`);
+  assert(after.stdout === before.stdout, "Dry-run changed git working tree status");
+
+  return "Dry-run plan generation did not change git working tree status";
+}
+
+async function testDryRunPlanDoesNotExecuteRemoteCode(): Promise<string> {
+  let executed = false;
+  const skillWithExecutable = {
+    ...createPolicyTestManifest({
+      name: "github-search-skill",
+      capabilities: ["github_search", "repo_discovery"],
+      permissions: ["network:github"],
+    }),
+    execute: () => {
+      executed = true;
+    },
+  };
+
+  const plan = createDryRunExecutionPlan({
+    goal: "plan remote skill execution only",
+    skill: skillWithExecutable,
+  });
+
+  assert(plan.mode === "dry-run", `Unexpected mode: ${plan.mode}`);
+  assert(executed === false, "Dry-run planner executed a skill function");
+
+  return "Dry-run planner used metadata only and did not call execute";
+}
+
+async function testV444PolicyStillPasses(): Promise<string> {
+  validateSkillPolicy(createPolicyTestManifest());
+  expectPolicyError(
+    createPolicyTestManifest({
+      permissions: ["network:github", "network:anywhere"],
+    }),
+    "Unknown skill permission: network:anywhere",
+  );
+  expectPolicyError(
+    createPolicyTestManifest({
+      capabilities: ["unknown_capability"],
+      permissions: ["network:github"],
+    }),
+    "Unknown skill capability: unknown_capability",
+  );
+
+  return "V4.4.4 policy validation still rejects unsafe manifests";
 }
 
 async function testTrustedRepoFetchesIndexWithIntegrity(): Promise<string> {
@@ -331,9 +530,18 @@ async function testV43StillPasses(): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  console.log("AI Dev OS V4.4.4 Verification");
+  console.log("AI Dev OS V4.4.5 Verification");
   console.log("");
 
+  await runTest("github-search-skill can generate dry-run plan", testGithubSearchDryRunPlan);
+  await runTest("auto-readme-generator can generate dry-run plan", testReadmeDryRunPlan);
+  await runTest("code-refactor-skill can generate dry-run plan", testCodeRefactorDryRunPlan);
+  await runTest("shell:execute dry-run plan is blocked", testShellExecuteDryRunBlocked);
+  await runTest("browser:write dry-run plan is blocked", testBrowserWriteDryRunBlocked);
+  await runTest("Unknown skill dry-run plan requires approval", testUnknownSkillDryRunRequiresApproval);
+  await runTest("Dry-run plan does not modify files", testDryRunPlanDoesNotModifyFiles);
+  await runTest("Dry-run plan does not execute remote code", testDryRunPlanDoesNotExecuteRemoteCode);
+  await runTest("V4.4.4 permission policy tests still pass", testV444PolicyStillPasses);
   await runTest("Legal permissions can pass policy validation", testLegalPermissionsPass);
   await runTest("Unknown permission fails policy validation", testUnknownPermissionFails);
   await runTest("Unknown capability fails policy validation", testUnknownCapabilityFails);
