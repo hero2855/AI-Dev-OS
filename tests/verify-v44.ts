@@ -1,11 +1,13 @@
-import { existsSync, readFileSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import {
   assertManifestMatchesLock,
   assertSha256Integrity,
   createDryRunExecutionPlan,
+  createDefaultSandboxConfig,
   executeSkill,
+  executeSandboxOperation,
   getSkill,
   getSkillManifestLock,
   loadGitHubSkillManifestIndex,
@@ -25,40 +27,8 @@ type TestResult = {
 const results: TestResult[] = [];
 const trustedRepo = "https://github.com/hero2855/AI-Dev-OS-skills";
 const untrustedRepo = "https://github.com/unknown/bad-skill";
+const sandboxRoot = resolve(process.cwd(), ".tmp", "ai-dev-os-sandbox-test");
 let cachedManifests: GitHubSkillManifest[] | null = null;
-
-function loadLocalEnv(): void {
-  const envPath = resolve(process.cwd(), ".env");
-
-  if (!existsSync(envPath)) {
-    return;
-  }
-
-  const content = readFileSync(envPath, "utf8");
-
-  for (const line of content.split(/\r?\n/)) {
-    const trimmed = line.trim();
-
-    if (!trimmed || trimmed.startsWith("#")) {
-      continue;
-    }
-
-    const separatorIndex = trimmed.indexOf("=");
-
-    if (separatorIndex === -1) {
-      continue;
-    }
-
-    const key = trimmed.slice(0, separatorIndex).trim();
-    const value = trimmed.slice(separatorIndex + 1).trim().replace(/^["']|["']$/g, "");
-
-    if (key && process.env[key] === undefined) {
-      process.env[key] = value;
-    }
-  }
-}
-
-loadLocalEnv();
 
 function record(status: TestStatus, name: string, details?: string): void {
   results.push({ name, status, details });
@@ -118,6 +88,15 @@ function assertRiskAtLeast(actual: string, expected: "low" | "medium" | "high" |
     rank[actual as keyof typeof rank] >= rank[expected],
     `Expected risk at least ${expected}, got ${actual}`,
   );
+}
+
+function prepareSandboxTestDir(): void {
+  rmSync(sandboxRoot, { recursive: true, force: true });
+  mkdirSync(sandboxRoot, { recursive: true });
+}
+
+function cleanupSandboxTestDir(): void {
+  rmSync(sandboxRoot, { recursive: true, force: true });
 }
 
 async function getTrustedManifests(): Promise<GitHubSkillManifest[]> {
@@ -375,6 +354,134 @@ async function testV444PolicyStillPasses(): Promise<string> {
   return "V4.4.4 policy validation still rejects unsafe manifests";
 }
 
+async function testSandboxWritesSafeFile(): Promise<string> {
+  prepareSandboxTestDir();
+  const config = createDefaultSandboxConfig(sandboxRoot);
+  const result = await executeSandboxOperation(config, "write", "safe.txt", "sandbox safe content");
+
+  assert(result.success === true, `Expected sandbox write to succeed: ${result.message}`);
+  assert(result.normalizedPath.startsWith(sandboxRoot), `Write escaped sandbox: ${result.normalizedPath}`);
+
+  return "Sandbox wrote safe.txt inside rootDir";
+}
+
+async function testSandboxReadsSafeFile(): Promise<string> {
+  const config = createDefaultSandboxConfig(sandboxRoot);
+  const result = await executeSandboxOperation(config, "read", "safe.txt");
+
+  assert(result.success === true, `Expected sandbox read to succeed: ${result.message}`);
+  assert("content" in result && result.content === "sandbox safe content", "Unexpected sandbox read content");
+
+  return "Sandbox read safe.txt inside rootDir";
+}
+
+async function testSandboxListsRootDir(): Promise<string> {
+  const config = createDefaultSandboxConfig(sandboxRoot);
+  const result = await executeSandboxOperation(config, "list", ".");
+
+  assert(result.success === true, `Expected sandbox list to succeed: ${result.message}`);
+  assert("entries" in result && result.entries?.includes("safe.txt"), "Sandbox list did not include safe.txt");
+
+  return "Sandbox listed rootDir";
+}
+
+async function testSandboxBlocksPathEscape(): Promise<string> {
+  const config = createDefaultSandboxConfig(sandboxRoot);
+  const result = await executeSandboxOperation(config, "read", "../outside.txt");
+
+  assert(result.success === false, "Expected path escape read to be blocked");
+  assert(
+    result.blockedReasons.includes("Sandbox path escape blocked"),
+    `Unexpected blocked reasons: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Sandbox blocked ../outside.txt path escape";
+}
+
+async function testSandboxBlocksEnvRead(): Promise<string> {
+  const config = createDefaultSandboxConfig(sandboxRoot);
+  const result = await executeSandboxOperation(config, "read", ".env");
+
+  assert(result.success === false, "Expected .env read to be blocked");
+  assert(
+    result.blockedReasons.includes("Blocked sensitive file access"),
+    `Unexpected blocked reasons: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Sandbox blocked .env read before file access";
+}
+
+async function testSandboxBlocksEnvWrite(): Promise<string> {
+  const config = createDefaultSandboxConfig(sandboxRoot);
+  const result = await executeSandboxOperation(config, "write", ".env", "SHOULD_NOT_WRITE=true");
+
+  assert(result.success === false, "Expected .env write to be blocked");
+  assert(
+    result.blockedReasons.includes("Blocked sensitive file access"),
+    `Unexpected blocked reasons: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Sandbox blocked .env write";
+}
+
+async function testSandboxRejectsDeleteByDefault(): Promise<string> {
+  const config = createDefaultSandboxConfig(sandboxRoot);
+  const result = await executeSandboxOperation(config, "delete", "safe.txt");
+
+  assert(result.success === false, "Expected delete to be rejected by default");
+  assert(
+    result.blockedReasons.includes("Sandbox deletes are disabled"),
+    `Unexpected blocked reasons: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Sandbox rejected delete by default";
+}
+
+async function testSandboxBlocksBusinessProjectPath(): Promise<string> {
+  const config = createDefaultSandboxConfig(sandboxRoot);
+  const businessProjectPath = "D:\\Atlas-OS\\Projects\\Project-001-Resume-AI\\README.md";
+  const result = await executeSandboxOperation(config, "read", businessProjectPath);
+
+  assert(result.success === false, "Expected business project path to be blocked");
+  assert(
+    result.blockedReasons.includes("Sandbox path escape blocked"),
+    `Unexpected blocked reasons: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Sandbox blocked Project-001-Resume-AI path access";
+}
+
+async function testSandboxExecutorDoesNotExecuteShell(): Promise<string> {
+  const config = createDefaultSandboxConfig(sandboxRoot);
+  const result = await executeSandboxOperation(config, "shell" as any, "echo should-not-run");
+
+  assert(result.success === false, "Expected unsupported shell operation to be blocked");
+  assert(result.message.includes("Unsupported sandbox operation: shell"), `Unexpected message: ${result.message}`);
+
+  return "Sandbox executor rejected shell operation";
+}
+
+async function testSandboxExecutorDoesNotExecuteNetwork(): Promise<string> {
+  const config = createDefaultSandboxConfig(sandboxRoot);
+  const result = await executeSandboxOperation(config, "network" as any, "https://github.com");
+
+  assert(result.success === false, "Expected unsupported network operation to be blocked");
+  assert(result.message.includes("Unsupported sandbox operation: network"), `Unexpected message: ${result.message}`);
+
+  return "Sandbox executor rejected network operation";
+}
+
+async function testSandboxExecutorDoesNotExecuteBrowser(): Promise<string> {
+  const config = createDefaultSandboxConfig(sandboxRoot);
+  const result = await executeSandboxOperation(config, "browser" as any, "https://example.com");
+
+  assert(result.success === false, "Expected unsupported browser operation to be blocked");
+  assert(result.message.includes("Unsupported sandbox operation: browser"), `Unexpected message: ${result.message}`);
+  cleanupSandboxTestDir();
+
+  return "Sandbox executor rejected browser operation";
+}
+
 async function testTrustedRepoFetchesIndexWithIntegrity(): Promise<string> {
   const manifests = await getTrustedManifests();
   const lock = getSkillManifestLock();
@@ -530,9 +637,20 @@ async function testV43StillPasses(): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  console.log("AI Dev OS V4.4.5 Verification");
+  console.log("AI Dev OS V4.4.6 Verification");
   console.log("");
 
+  await runTest("Sandbox can write safe.txt inside rootDir", testSandboxWritesSafeFile);
+  await runTest("Sandbox can read safe.txt inside rootDir", testSandboxReadsSafeFile);
+  await runTest("Sandbox can list rootDir", testSandboxListsRootDir);
+  await runTest("Sandbox blocks ../outside.txt path escape", testSandboxBlocksPathEscape);
+  await runTest("Sandbox blocks .env read", testSandboxBlocksEnvRead);
+  await runTest("Sandbox blocks .env write", testSandboxBlocksEnvWrite);
+  await runTest("Sandbox rejects delete by default", testSandboxRejectsDeleteByDefault);
+  await runTest("Sandbox blocks Project-001-Resume-AI path", testSandboxBlocksBusinessProjectPath);
+  await runTest("Sandbox executor does not execute shell", testSandboxExecutorDoesNotExecuteShell);
+  await runTest("Sandbox executor does not execute network", testSandboxExecutorDoesNotExecuteNetwork);
+  await runTest("Sandbox executor does not execute browser", testSandboxExecutorDoesNotExecuteBrowser);
   await runTest("github-search-skill can generate dry-run plan", testGithubSearchDryRunPlan);
   await runTest("auto-readme-generator can generate dry-run plan", testReadmeDryRunPlan);
   await runTest("code-refactor-skill can generate dry-run plan", testCodeRefactorDryRunPlan);

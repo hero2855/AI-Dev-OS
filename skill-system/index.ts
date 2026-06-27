@@ -40,4 +40,25 @@ export type {
   DryRunRiskLevel,
   DryRunSkillMetadata,
 } from "./execution-plan";
+export {
+  assertNotBlockedFile,
+  assertPathInsideRoot,
+  assertSandboxPathAllowed,
+  createDefaultSandboxConfig,
+  executeSandboxOperation,
+  normalizeSandboxPath,
+  sandboxDeleteFile,
+  sandboxListDir,
+  sandboxReadFile,
+  sandboxWriteFile,
+} from "./sandbox";
+export type {
+  ExecuteSandboxOperationResult,
+  SandboxConfig,
+  SandboxExecutionMode,
+  SandboxExecutionResult,
+  SandboxListResult,
+  SandboxOperation,
+  SandboxReadResult,
+} from "./sandbox";
 export { mockGitHubSkills, selectMockGitHubSkill };
