@@ -11,6 +11,7 @@
   "include": [
     "agent-core/**/*.ts",
     "skill-system/**/*.ts",
+    "workspace/**/*.ts",
     "tests/**/*.ts"
   ]
 }

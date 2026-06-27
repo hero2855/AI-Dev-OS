@@ -10,8 +10,11 @@ import {
   executeSandboxOperation,
   getSkill,
   getSkillManifestLock,
+  createWorkspaceManager,
   loadGitHubSkillManifestIndex,
+  listWorkspaceProjects,
   registerGitHubSkillsFromManifestIndex,
+  selectProjectForGoal,
   validateSkillPolicy,
 } from "../skill-system";
 import type { GitHubSkillManifest } from "../skill-system";
@@ -99,12 +102,168 @@ function cleanupSandboxTestDir(): void {
   rmSync(sandboxRoot, { recursive: true, force: true });
 }
 
+function expectWorkspacePathError(operation: () => unknown, expectedMessage: string): string {
+  try {
+    operation();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    assert(message === expectedMessage, `Unexpected workspace path error: ${message}`);
+    return message;
+  }
+
+  throw new Error(`Expected workspace path error: ${expectedMessage}`);
+}
+
 async function getTrustedManifests(): Promise<GitHubSkillManifest[]> {
   if (!cachedManifests) {
     cachedManifests = await loadGitHubSkillManifestIndex(trustedRepo);
   }
 
   return cachedManifests;
+}
+
+async function testWorkspaceProjectListContainsThreeProjects(): Promise<string> {
+  const projects = listWorkspaceProjects();
+  const projectIds = projects.map((project) => project.id).sort();
+
+  assert(projects.length === 3, `Expected 3 workspace projects, got ${projects.length}`);
+  assert(projectIds.includes("ai-dev-os"), "Missing ai-dev-os project");
+  assert(projectIds.includes("ai-dev-os-skills"), "Missing ai-dev-os-skills project");
+  assert(projectIds.includes("project-001-resume-ai"), "Missing project-001-resume-ai project");
+
+  return `Workspace projects: ${projectIds.join(", ")}`;
+}
+
+async function testWorkspaceGetAiDevOsById(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const project = manager.getProject("ai-dev-os");
+
+  assert(project?.id === "ai-dev-os", "Could not load ai-dev-os project by id");
+  assert(project.protected === true, "ai-dev-os should be protected");
+
+  return `${project.name} is protected`;
+}
+
+async function testWorkspaceGetSkillsById(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const project = manager.getProject("ai-dev-os-skills");
+
+  assert(project?.id === "ai-dev-os-skills", "Could not load ai-dev-os-skills project by id");
+  assert(project.protected === true, "ai-dev-os-skills should be protected");
+
+  return `${project.name} is protected`;
+}
+
+async function testWorkspaceGetResumeAiById(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const project = manager.getProject("project-001-resume-ai");
+
+  assert(project?.id === "project-001-resume-ai", "Could not load project-001-resume-ai project by id");
+  assert(project.protected === false, "project-001-resume-ai should not be protected");
+
+  return `${project.name} is available as product-app`;
+}
+
+async function testWorkspaceSelectsResumeAiGoal(): Promise<string> {
+  const result = selectProjectForGoal("优化简历 AI 首页");
+
+  assert(result.selectedProject?.id === "project-001-resume-ai", "Resume AI goal did not select product project");
+  assert(result.requiresClarification === false, "Non-destructive product-app goal should not require clarification");
+  assert(result.riskLevel === "medium", `Expected medium risk, got ${result.riskLevel}`);
+
+  return result.reason;
+}
+
+async function testWorkspaceSelectsProtectedSkillsGoal(): Promise<string> {
+  const result = selectProjectForGoal("更新 skill manifest repo");
+
+  assert(result.selectedProject?.id === "ai-dev-os-skills", "Skill manifest goal did not select skills repo");
+  assert(result.requiresClarification === true, "Protected skills repo should require clarification");
+  assert(result.riskLevel === "high", `Expected high risk, got ${result.riskLevel}`);
+  assert(result.reason.includes("protected project"), `Reason should mention protected project: ${result.reason}`);
+
+  return result.reason;
+}
+
+async function testWorkspaceSelectsProtectedCoreGoal(): Promise<string> {
+  const result = selectProjectForGoal("继续 AI Dev OS sandbox");
+
+  assert(result.selectedProject?.id === "ai-dev-os", "AI Dev OS sandbox goal did not select system core");
+  assert(result.requiresClarification === true, "Protected system core should require clarification");
+  assert(result.riskLevel === "high", `Expected high risk, got ${result.riskLevel}`);
+  assert(result.reason.includes("protected project"), `Reason should mention protected project: ${result.reason}`);
+
+  return result.reason;
+}
+
+async function testWorkspaceUnknownGoalNeedsClarification(): Promise<string> {
+  const result = selectProjectForGoal("build the thing tomorrow");
+
+  assert(result.selectedProject === undefined, "Unknown goal should not select a project");
+  assert(result.confidence === 0, `Expected confidence 0, got ${result.confidence}`);
+  assert(result.requiresClarification === true, "Unknown goal should require clarification");
+  assert(result.reason === "Unable to confidently select a project from the goal.", `Unexpected reason: ${result.reason}`);
+
+  return result.reason;
+}
+
+async function testWorkspaceResolvePathAllowsProjectFile(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const resolvedPath = manager.resolvePath("ai-dev-os", "package.json");
+
+  assert(resolvedPath.endsWith("AI-Dev-OS\\package.json"), `Unexpected resolved path: ${resolvedPath}`);
+
+  return resolvedPath;
+}
+
+async function testWorkspaceResolvePathBlocksEscape(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const message = expectWorkspacePathError(
+    () => manager.resolvePath("ai-dev-os", "..\\Project-001-Resume-AI\\package.json"),
+    "Workspace path escape blocked",
+  );
+
+  return message;
+}
+
+async function testWorkspaceResolvePathBlocksEnv(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const message = expectWorkspacePathError(
+    () => manager.resolvePath("ai-dev-os", ".env"),
+    "Workspace sensitive file access blocked",
+  );
+
+  return message;
+}
+
+async function testWorkspaceBusinessGoalDoesNotSelectCore(): Promise<string> {
+  const result = selectProjectForGoal("优化 resume AI paid Vercel page");
+  const selectedProjectId: string | undefined = result.selectedProject?.id;
+
+  assert(selectedProjectId !== "ai-dev-os", "Business goal must not select AI Dev OS core");
+  assert(selectedProjectId === "project-001-resume-ai", "Business goal should select Resume AI");
+
+  return `Selected ${selectedProjectId}`;
+}
+
+async function testWorkspaceManagerDoesNotModifyResumeAi(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const result = manager.selectProject("优化简历 AI 首页");
+
+  assert(result.selectedProject?.id === "project-001-resume-ai", "Resume AI selection failed");
+  assert(result.requiresClarification === false, "Selection-only product goal should not require clarification");
+
+  return "Workspace Manager only selected Project-001-Resume-AI metadata";
+}
+
+async function testWorkspaceManagerDoesNotModifySkillsRepo(): Promise<string> {
+  const manager = createWorkspaceManager();
+  const result = manager.selectProject("更新 skill manifest repo");
+
+  assert(result.selectedProject?.id === "ai-dev-os-skills", "Skills repo selection failed");
+  assert(result.requiresClarification === true, "Protected skills repo should require clarification before changes");
+
+  return "Workspace Manager only selected AI-Dev-OS-skills metadata";
 }
 
 async function testLegalPermissionsPass(): Promise<string> {
@@ -640,6 +799,20 @@ async function main(): Promise<void> {
   console.log("AI Dev OS V4.4.6 Verification");
   console.log("");
 
+  await runTest("Workspace project list contains 3 projects", testWorkspaceProjectListContainsThreeProjects);
+  await runTest("Workspace can get ai-dev-os by id", testWorkspaceGetAiDevOsById);
+  await runTest("Workspace can get ai-dev-os-skills by id", testWorkspaceGetSkillsById);
+  await runTest("Workspace can get project-001-resume-ai by id", testWorkspaceGetResumeAiById);
+  await runTest("Workspace selects Resume AI goal", testWorkspaceSelectsResumeAiGoal);
+  await runTest("Workspace selects protected skill manifest repo goal", testWorkspaceSelectsProtectedSkillsGoal);
+  await runTest("Workspace selects protected AI Dev OS sandbox goal", testWorkspaceSelectsProtectedCoreGoal);
+  await runTest("Workspace unknown goal requires clarification", testWorkspaceUnknownGoalNeedsClarification);
+  await runTest("Workspace resolvePath allows package.json", testWorkspaceResolvePathAllowsProjectFile);
+  await runTest("Workspace resolvePath blocks ../ escape", testWorkspaceResolvePathBlocksEscape);
+  await runTest("Workspace resolvePath blocks .env", testWorkspaceResolvePathBlocksEnv);
+  await runTest("Workspace business goal does not select AI Dev OS core", testWorkspaceBusinessGoalDoesNotSelectCore);
+  await runTest("Workspace Manager does not modify Project-001-Resume-AI", testWorkspaceManagerDoesNotModifyResumeAi);
+  await runTest("Workspace Manager does not modify AI-Dev-OS-skills", testWorkspaceManagerDoesNotModifySkillsRepo);
   await runTest("Sandbox can write safe.txt inside rootDir", testSandboxWritesSafeFile);
   await runTest("Sandbox can read safe.txt inside rootDir", testSandboxReadsSafeFile);
   await runTest("Sandbox can list rootDir", testSandboxListsRootDir);

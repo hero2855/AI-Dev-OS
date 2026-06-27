@@ -61,4 +61,17 @@ export type {
   SandboxOperation,
   SandboxReadResult,
 } from "./sandbox";
+export {
+  assertNotSensitiveProjectPath,
+  assertPathInsideProject,
+  assertWorkspacePathAllowed,
+  assertWorkspaceProjectExists,
+  createWorkspaceManager,
+  getDefaultWorkspaceProjects,
+  getWorkspaceProjectById,
+  listWorkspaceProjects,
+  normalizeProjectPath,
+  selectProjectForGoal,
+} from "../workspace";
+export type { ProjectRiskLevel, ProjectSelectionResult, ProjectType, WorkspaceProject } from "../workspace";
 export { mockGitHubSkills, selectMockGitHubSkill };
