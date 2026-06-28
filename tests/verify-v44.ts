@@ -41,6 +41,7 @@ type TestResult = {
 
 const results: TestResult[] = [];
 const trustedRepo = "https://github.com/hero2855/AI-Dev-OS-skills";
+const ponytailRepo = "https://github.com/DietrichGebert/ponytail";
 const untrustedRepo = "https://github.com/unknown/bad-skill";
 const sandboxRoot = resolve(process.cwd(), ".tmp", "ai-dev-os-sandbox-test");
 let cachedManifests: GitHubSkillManifest[] | null = null;
@@ -223,6 +224,67 @@ function createOfflineManifestFixture(): { lock: SkillManifestLock; textByPath: 
     },
     textByPath,
   };
+}
+
+function createPonytailManifest(overrides: Partial<GitHubSkillManifest> = {}): GitHubSkillManifest {
+  return {
+    name: "ponytail",
+    version: "4.8.3",
+    description: "Metadata-only Ponytail programming skill evaluation fixture.",
+    entry: "skills/ponytail/SKILL.md",
+    capabilities: ["code_refactor", "source_editing"],
+    permissions: ["file:read", "file:write:src"],
+    ...overrides,
+  };
+}
+
+function createOfflinePonytailManifestFixture(): { lock: SkillManifestLock; textByPath: Record<string, string> } {
+  const manifest = createPonytailManifest();
+  const manifestPath = ".ai-dev-os/skills/ponytail/skill.json";
+  const indexPath = ".ai-dev-os/skills/index.json";
+  const indexText = stableJson({
+    skills: [{ path: manifestPath }],
+  });
+  const manifestText = stableJson(manifest);
+
+  return {
+    lock: {
+      trustedRepo: ponytailRepo,
+      index: {
+        path: indexPath,
+        sha256: sha256Text(indexText),
+      },
+      skills: [
+        {
+          name: manifest.name,
+          version: manifest.version,
+          path: manifestPath,
+          sha256: sha256Text(manifestText),
+        },
+      ],
+    },
+    textByPath: {
+      [indexPath]: indexText,
+      [manifestPath]: manifestText,
+    },
+  };
+}
+
+async function loadPonytailFixtureManifests(): Promise<GitHubSkillManifest[]> {
+  const fixture = createOfflinePonytailManifestFixture();
+
+  return loadGitHubSkillManifestIndex(ponytailRepo, {
+    lock: fixture.lock,
+    fetchText: async (url: string) => {
+      const path = Object.keys(fixture.textByPath).find((item) => url.endsWith(item));
+
+      if (!path) {
+        throw new Error(`Unexpected offline Ponytail manifest fetch path: ${url}`);
+      }
+
+      return fixture.textByPath[path];
+    },
+  });
 }
 
 async function testWorkspaceProjectListContainsThreeProjects(): Promise<string> {
@@ -949,6 +1011,134 @@ async function testGitHubSkillV1ResultIncludesRequiredShape(): Promise<string> {
   assert(result.summary.includes("GitHub Skill v1"), `Result should include summary: ${result.summary}`);
 
   return "GitHub Skill v1 result includes action, risk, approval, blocked reasons, permissions, capabilities, and summary";
+}
+
+async function testPonytailTrustedRepoAcceptedMetadataOnly(): Promise<string> {
+  const manifests = await loadPonytailFixtureManifests();
+  const [manifest] = manifests;
+  const manifestText = stableJson(manifest);
+  const result = runGitHubSkillV1Request({
+    repoUrl: ponytailRepo,
+    manifestPath: ".ai-dev-os/skills/ponytail/skill.json",
+    manifest,
+    manifestText,
+    expectedSha256: sha256Text(manifestText),
+    mode: "mock",
+    action: {
+      type: "github:read",
+      description: "Evaluate Ponytail metadata only.",
+    },
+  });
+
+  assert(manifests.length === 1, `Expected one Ponytail manifest, got ${manifests.length}`);
+  assert(result.status === "completed", `Expected metadata-only Ponytail read to complete, got ${result.status}`);
+  assert(result.manifestValidation.trustedRepo === true, "Ponytail repo should be trusted for metadata-only evaluation");
+  assert(result.manifestValidation.integrityValid === true, "Ponytail metadata fixture should pass integrity validation");
+  assert(result.runtimeResult?.auditSummary.realNetworkOperation === false, "Ponytail metadata read must not perform real network");
+
+  return "Ponytail trusted repo accepted as metadata-only source";
+}
+
+async function testPonytailCodingSkillCapabilitiesRecognized(): Promise<string> {
+  const [manifest] = await loadPonytailFixtureManifests();
+
+  assert(manifest.capabilities.includes("code_refactor"), "Ponytail should expose code_refactor capability");
+  assert(manifest.capabilities.includes("source_editing"), "Ponytail should expose source_editing capability");
+  validateSkillPolicy(manifest);
+
+  return `Ponytail capabilities recognized: ${manifest.capabilities.join(", ")}`;
+}
+
+async function testPonytailRemoteCodeExecutionBlocked(): Promise<string> {
+  const manifest = createPonytailManifest();
+  const result = runGitHubSkillV1Request({
+    repoUrl: ponytailRepo,
+    manifestPath: ".ai-dev-os/skills/ponytail/skill.json",
+    manifest,
+    mode: "external",
+    action: {
+      type: "github:read",
+      description: "Attempt external Ponytail execution.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected external Ponytail execution blocked, got ${result.status}`);
+  assert(
+    result.blockedReasons.includes("External GitHub Skill v1 runtime mode is disabled"),
+    `Missing external runtime block reason: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Ponytail remote code execution remains blocked";
+}
+
+async function testPonytailInstallAndScriptExecutionBlocked(): Promise<string> {
+  const result = runGitHubSkillV1Request({
+    repoUrl: ponytailRepo,
+    manifestPath: ".ai-dev-os/skills/ponytail-install/skill.json",
+    manifest: createPonytailManifest({
+      name: "ponytail-install-script",
+      entry: "package.json#scripts.test",
+      capabilities: ["shell_execute"],
+      permissions: ["shell:execute"],
+    }),
+    mode: "mock",
+    action: {
+      type: "github:read",
+      description: "Attempt Ponytail install or script execution.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected Ponytail install/script execution blocked, got ${result.status}`);
+  assert(result.manifestValidation.policyValid === false, "shell:execute policy should be invalid");
+  assert(
+    result.blockedReasons.includes("Permission shell:execute is disabled in V4.4.4"),
+    `Missing shell execute block reason: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Ponytail install/script execution remains blocked";
+}
+
+async function testUntrustedPonytailLikeRepoBlocked(): Promise<string> {
+  const result = runGitHubSkillV1Request({
+    repoUrl: "https://github.com/example/ponytail",
+    manifestPath: ".ai-dev-os/skills/ponytail/skill.json",
+    manifest: createPonytailManifest(),
+    mode: "mock",
+    action: {
+      type: "github:read",
+      description: "Evaluate Ponytail-like metadata.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected untrusted Ponytail-like repo blocked, got ${result.status}`);
+  assert(result.manifestValidation.trustedRepo === false, "Ponytail-like repo should not be trusted");
+  assert(result.blockedReasons.includes("Untrusted GitHub skill repo"), `Missing untrusted reason: ${result.blockedReasons.join(", ")}`);
+
+  return "Untrusted Ponytail-like repo blocked";
+}
+
+async function testPonytailInvalidPermissionsBlocked(): Promise<string> {
+  const result = runGitHubSkillV1Request({
+    repoUrl: ponytailRepo,
+    manifestPath: ".ai-dev-os/skills/ponytail-invalid/skill.json",
+    manifest: createPonytailManifest({
+      permissions: ["network:anywhere"],
+    }),
+    mode: "mock",
+    action: {
+      type: "github:read",
+      description: "Evaluate Ponytail metadata with invalid permissions.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected invalid Ponytail permissions blocked, got ${result.status}`);
+  assert(result.manifestValidation.policyValid === false, "Invalid permissions should fail policy validation");
+  assert(
+    result.blockedReasons.includes("Unknown skill permission: network:anywhere"),
+    `Missing invalid permission reason: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Ponytail invalid permissions blocked";
 }
 
 async function testHealthCheckAiDevOs(): Promise<string> {
@@ -2271,6 +2461,12 @@ async function main(): Promise<void> {
   await runTest("GitHub Skill v1 unknown policy is blocked", testGitHubSkillV1UnknownPolicyBlocked);
   await runTest("GitHub Skill v1 validates integrity when available", testGitHubSkillV1IntegrityValidation);
   await runTest("GitHub Skill v1 result includes required action shape", testGitHubSkillV1ResultIncludesRequiredShape);
+  await runTest("Ponytail trusted repo accepted as metadata-only source", testPonytailTrustedRepoAcceptedMetadataOnly);
+  await runTest("Ponytail coding skill capabilities recognized", testPonytailCodingSkillCapabilitiesRecognized);
+  await runTest("Ponytail remote code execution remains blocked", testPonytailRemoteCodeExecutionBlocked);
+  await runTest("Ponytail install/script execution remains blocked", testPonytailInstallAndScriptExecutionBlocked);
+  await runTest("Untrusted Ponytail-like repo blocked", testUntrustedPonytailLikeRepoBlocked);
+  await runTest("Ponytail invalid permissions blocked", testPonytailInvalidPermissionsBlocked);
   await runTest("Sandbox can write safe.txt inside rootDir", testSandboxWritesSafeFile);
   await runTest("Sandbox can read safe.txt inside rootDir", testSandboxReadsSafeFile);
   await runTest("Sandbox can list rootDir", testSandboxListsRootDir);

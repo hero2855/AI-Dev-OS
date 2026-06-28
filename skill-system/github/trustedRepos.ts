@@ -1,5 +1,6 @@
 export const TRUSTED_GITHUB_SKILL_REPOS = [
   "https://github.com/hero2855/AI-Dev-OS-skills",
+  "https://github.com/DietrichGebert/ponytail",
 ];
 
 function normalizeRepoUrl(repoUrl: string): string {
