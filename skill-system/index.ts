@@ -116,3 +116,12 @@ export type {
   WorkflowApprovalStatus,
 } from "../development-workflow";
 export { mockGitHubSkills, selectMockGitHubSkill };
+export { createChangeSetPreview } from "../change-set";
+export type {
+  ChangeSetPreview,
+  ChangeSetPreviewStatus,
+  CreateChangeSetPreviewInput,
+  PlannedChangeOperation,
+  PlannedChangePreview,
+  PlannedFileOperation,
+} from "../change-set";

@@ -10,6 +10,7 @@
   },
   "include": [
     "agent-core/**/*.ts",
+    "change-set/**/*.ts",
     "development-workflow/**/*.ts",
     "github-helper/**/*.ts",
     "project-health/**/*.ts",

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
+import { createChangeSetPreview } from "../change-set";
 import { classifyGitHubPushVerification } from "../github-helper";
 import { analyzeTypeScriptHealth } from "../project-health";
 import {
@@ -363,6 +364,212 @@ async function testWorkspaceManagerDoesNotModifySkillsRepo(): Promise<string> {
   assert(result.requiresClarification === true, "Protected skills repo should require clarification before changes");
 
   return "Workspace Manager only selected AI-Dev-OS-skills metadata";
+}
+
+async function testChangeSetSafeCreateUpdatePreview(): Promise<string> {
+  const project = getWorkspaceProjectById("project-001-resume-ai");
+
+  assert(project, "Missing Project-001-Resume-AI metadata");
+
+  const preview = createChangeSetPreview({
+    goal: "preview safe product copy changes",
+    project,
+    plannedReads: ["README.md"],
+    plannedChanges: [
+      {
+        operation: "create",
+        path: "docs/preview.md",
+        changeSummary: "Create preview documentation.",
+      },
+      {
+        operation: "update",
+        path: "src/page.tsx",
+        changeSummary: "Update page copy.",
+      },
+    ],
+  });
+
+  assert(preview.status === "preview_ready", `Expected preview_ready, got ${preview.status}`);
+  assert(preview.riskLevel === "medium", `Expected medium risk, got ${preview.riskLevel}`);
+  assert(preview.requiresApproval === false, "Allowed product preview should not require approval");
+  assert(preview.plannedChanges.length === 2, `Expected 2 planned changes, got ${preview.plannedChanges.length}`);
+
+  return `${preview.changeSetId} ${preview.summary}`;
+}
+
+async function testChangeSetBlocksEnvWrite(): Promise<string> {
+  const project = getWorkspaceProjectById("project-001-resume-ai");
+
+  assert(project, "Missing Project-001-Resume-AI metadata");
+
+  const preview = createChangeSetPreview({
+    goal: "preview env write",
+    project,
+    plannedChanges: [
+      {
+        operation: "update",
+        path: ".env",
+        changeSummary: "Would update env configuration.",
+      },
+    ],
+  });
+
+  assert(preview.status === "blocked", `Expected blocked env preview, got ${preview.status}`);
+  assert(preview.riskLevel === "blocked", `Expected blocked risk, got ${preview.riskLevel}`);
+  assert(preview.plannedChanges[0]?.isEnvFile === true, "Env write should be marked as env file");
+  assert(
+    preview.blockedReasons.includes("ChangeSet sensitive env file write blocked"),
+    `Missing env blocked reason: ${preview.blockedReasons.join(", ")}`,
+  );
+
+  return "ChangeSet blocked .env planned write";
+}
+
+async function testChangeSetBlocksPathEscape(): Promise<string> {
+  const project = getWorkspaceProjectById("project-001-resume-ai");
+
+  assert(project, "Missing Project-001-Resume-AI metadata");
+
+  const preview = createChangeSetPreview({
+    goal: "preview path escape",
+    project,
+    plannedChanges: [
+      {
+        operation: "update",
+        path: "../AI-Dev-OS/package.json",
+        changeSummary: "Would escape project root.",
+      },
+    ],
+  });
+
+  assert(preview.status === "blocked", `Expected blocked path escape preview, got ${preview.status}`);
+  assert(preview.plannedChanges[0]?.isPathEscape === true, "Path escape should be marked");
+  assert(
+    preview.blockedReasons.includes("ChangeSet path escape blocked"),
+    `Missing path escape blocked reason: ${preview.blockedReasons.join(", ")}`,
+  );
+
+  return "ChangeSet blocked ../ path escape";
+}
+
+async function testChangeSetDeleteBlockedByDefault(): Promise<string> {
+  const project = getWorkspaceProjectById("project-001-resume-ai");
+
+  assert(project, "Missing Project-001-Resume-AI metadata");
+
+  const preview = createChangeSetPreview({
+    goal: "preview delete",
+    project,
+    plannedChanges: [
+      {
+        operation: "delete",
+        path: "docs/old.md",
+        changeSummary: "Would remove old documentation.",
+      },
+    ],
+  });
+
+  assert(preview.status === "blocked", `Expected blocked delete preview, got ${preview.status}`);
+  assert(preview.riskLevel === "blocked", `Expected blocked delete risk, got ${preview.riskLevel}`);
+  assert(
+    preview.blockedReasons.includes("ChangeSet delete operation blocked by default"),
+    `Missing delete blocked reason: ${preview.blockedReasons.join(", ")}`,
+  );
+
+  return "ChangeSet blocked delete by default";
+}
+
+async function testChangeSetProtectedProjectRequiresApproval(): Promise<string> {
+  const project = getWorkspaceProjectById("ai-dev-os");
+
+  assert(project, "Missing AI Dev OS project metadata");
+
+  const preview = createChangeSetPreview({
+    goal: "preview protected core change",
+    project,
+    plannedChanges: [
+      {
+        operation: "update",
+        path: "README.md",
+        changeSummary: "Would update protected core docs.",
+      },
+    ],
+    approvalRecordId: "approval-preview-test",
+  });
+
+  assert(preview.status === "pending_approval", `Expected pending approval, got ${preview.status}`);
+  assert(preview.requiresApproval === true, "Protected project preview should require approval");
+  assert(preview.riskLevel === "high", `Expected high risk, got ${preview.riskLevel}`);
+  assert(preview.approvalRecordId === "approval-preview-test", "Approval record id should be included");
+  assert(preview.plannedChanges[0]?.isProtectedPath === true, "Protected path should be marked");
+
+  return "ChangeSet protected project preview requires approval";
+}
+
+async function testChangeSetPreviewIncludesShape(): Promise<string> {
+  const project = getWorkspaceProjectById("project-001-resume-ai");
+
+  assert(project, "Missing Project-001-Resume-AI metadata");
+
+  const preview = createChangeSetPreview({
+    goal: "preview result shape",
+    project,
+    plannedReads: ["package.json", "README.md"],
+    plannedChanges: [
+      {
+        operation: "rename",
+        path: "docs/old.md",
+        targetPath: "docs/new.md",
+        changeSummary: "Would rename docs file.",
+      },
+    ],
+  });
+
+  assert(Array.isArray(preview.plannedReads), "plannedReads should be an array");
+  assert(Array.isArray(preview.plannedWrites), "plannedWrites should be an array");
+  assert(typeof preview.riskLevel === "string", "riskLevel should be present");
+  assert(Array.isArray(preview.blockedReasons), "blockedReasons should be an array");
+  assert(preview.summary.includes("No files were modified"), `Summary should mention no files modified: ${preview.summary}`);
+  assert(preview.plannedWrites.includes("docs/old.md"), "Rename source should be in plannedWrites");
+  assert(preview.plannedWrites.includes("docs/new.md"), "Rename target should be in plannedWrites");
+
+  return "ChangeSet preview includes plannedReads, plannedWrites, riskLevel, blockedReasons, and summary";
+}
+
+async function testChangeSetPreviewDoesNotModifyFiles(): Promise<string> {
+  const project = getWorkspaceProjectById("project-001-resume-ai");
+
+  assert(project, "Missing Project-001-Resume-AI metadata");
+
+  const before = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(before.status === 0, `git status before ChangeSet preview failed: ${before.stderr}`);
+
+  createChangeSetPreview({
+    goal: "preview only without writing",
+    project,
+    plannedReads: ["README.md"],
+    plannedChanges: [
+      {
+        operation: "create",
+        path: "docs/preview-only.md",
+        changeSummary: "Would create preview-only docs.",
+      },
+    ],
+  });
+
+  const after = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(after.status === 0, `git status after ChangeSet preview failed: ${after.stderr}`);
+  assert(after.stdout === before.stdout, `ChangeSet preview changed git status:\nBefore:\n${before.stdout}\nAfter:\n${after.stdout}`);
+
+  return "ChangeSet preview did not modify repo files";
 }
 
 async function testHealthCheckAiDevOs(): Promise<string> {
@@ -1662,6 +1869,13 @@ async function main(): Promise<void> {
   await runTest("Workspace business goal does not select AI Dev OS core", testWorkspaceBusinessGoalDoesNotSelectCore);
   await runTest("Workspace Manager does not modify Project-001-Resume-AI", testWorkspaceManagerDoesNotModifyResumeAi);
   await runTest("Workspace Manager does not modify AI-Dev-OS-skills", testWorkspaceManagerDoesNotModifySkillsRepo);
+  await runTest("ChangeSet preview supports safe create/update in allowed project path", testChangeSetSafeCreateUpdatePreview);
+  await runTest("ChangeSet preview blocks .env planned writes", testChangeSetBlocksEnvWrite);
+  await runTest("ChangeSet preview blocks ../ path escape", testChangeSetBlocksPathEscape);
+  await runTest("ChangeSet preview blocks delete by default", testChangeSetDeleteBlockedByDefault);
+  await runTest("ChangeSet preview requires approval for protected project changes", testChangeSetProtectedProjectRequiresApproval);
+  await runTest("ChangeSet preview includes required result shape", testChangeSetPreviewIncludesShape);
+  await runTest("ChangeSet preview does not modify files", testChangeSetPreviewDoesNotModifyFiles);
   await runTest("Sandbox can write safe.txt inside rootDir", testSandboxWritesSafeFile);
   await runTest("Sandbox can read safe.txt inside rootDir", testSandboxReadsSafeFile);
   await runTest("Sandbox can list rootDir", testSandboxListsRootDir);
