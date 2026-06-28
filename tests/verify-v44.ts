@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
+import { classifyGitHubPushVerification } from "../github-helper";
 import {
   assertManifestMatchesLock,
   assertSha256Integrity,
@@ -1405,6 +1406,139 @@ async function testV43StillPasses(): Promise<string> {
   return "verify:v43 reported Passed: 6, Failed: 0, Skipped: 0";
 }
 
+async function testGitHubPushConnectionResetClassifiedAsNetworkRetry(): Promise<string> {
+  const result = classifyGitHubPushVerification({
+    stderr: "fatal: unable to access 'https://github.com/example/repo.git/': Recv failure: Connection was reset",
+    exitCode: 128,
+  });
+  const repeated = classifyGitHubPushVerification({
+    stderr: "fatal: unable to access 'https://github.com/example/repo.git/': Recv failure: Connection was reset",
+    exitCode: 128,
+    repeatedFailure: true,
+  });
+
+  assert(result.status === "failed", "Connection reset should fail verification");
+  assert(result.failureKind === "connection_reset", `Unexpected kind: ${result.failureKind}`);
+  assert(result.isNetworkIssue === true, "Connection reset should be a network issue");
+  assert(result.shouldRetry === true, "First connection reset should allow one retry");
+  assert(repeated.shouldStop === true, "Repeated connection reset should stop");
+  assert(repeated.shouldRetry === false, "Repeated connection reset should not keep retrying");
+
+  return "connection_reset => network retry once, repeated stop";
+}
+
+async function testGitHubPushPort443ClassifiedAsNetwork(): Promise<string> {
+  const result = classifyGitHubPushVerification({
+    stderr: "fatal: unable to access 'https://github.com/example/repo.git/': Failed to connect to github.com port 443 after 21090 ms: Could not connect to server",
+    exitCode: 128,
+  });
+
+  assert(result.failureKind === "port_443_connection_failure", `Unexpected kind: ${result.failureKind}`);
+  assert(result.isNetworkIssue === true, "Port 443 failure should be a network issue");
+  assert(result.safeToUseTemporaryCurlResolve === true, "Port 443 failure can use temporary curl resolve guidance");
+  assert(result.shouldRetry === true, "Port 443 failure should allow one retry");
+
+  return "port_443_connection_failure => network issue";
+}
+
+async function testGitHubPushDnsFailureClassified(): Promise<string> {
+  const result = classifyGitHubPushVerification({
+    stderr: "fatal: unable to access 'https://github.com/example/repo.git/': Could not resolve host: github.com",
+    exitCode: 128,
+  });
+
+  assert(result.failureKind === "dns_failure", `Unexpected kind: ${result.failureKind}`);
+  assert(result.isNetworkIssue === true, "DNS failure should be a network issue");
+  assert(result.safeToUseTemporaryCurlResolve === true, "DNS failure can use temporary curl resolve guidance");
+  assert(result.shouldRetry === true, "DNS failure should allow one retry");
+
+  return "dns_failure => network issue";
+}
+
+async function testGitHubPushAuthenticationFailureClassified(): Promise<string> {
+  const result = classifyGitHubPushVerification({
+    stderr: "remote: Invalid username or password.\nfatal: Authentication failed for 'https://github.com/example/repo.git/'",
+    exitCode: 128,
+  });
+
+  assert(result.failureKind === "authentication_failure", `Unexpected kind: ${result.failureKind}`);
+  assert(result.isAuthIssue === true, "Authentication failure should be an auth issue");
+  assert(result.shouldRetry === false, "Authentication failure should not retry blindly");
+  assert(result.shouldStop === true, "Authentication failure should stop");
+
+  return "authentication_failure => stop for credentials";
+}
+
+async function testGitHubPushPermissionDeniedClassified(): Promise<string> {
+  const result = classifyGitHubPushVerification({
+    stderr: "ERROR: Permission denied to github-user/example.git.\nfatal: Could not read from remote repository.",
+    exitCode: 128,
+  });
+
+  assert(result.failureKind === "permission_denied", `Unexpected kind: ${result.failureKind}`);
+  assert(result.isAuthIssue === true, "Permission denied should be an auth/permission issue");
+  assert(result.shouldRetry === false, "Permission denied should not retry blindly");
+  assert(result.shouldStop === true, "Permission denied should stop");
+
+  return "permission_denied => stop for access review";
+}
+
+async function testGitHubPushNonFastForwardClassified(): Promise<string> {
+  const result = classifyGitHubPushVerification({
+    stderr: "! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs to 'https://github.com/example/repo.git'",
+    exitCode: 1,
+  });
+
+  assert(result.failureKind === "non_fast_forward", `Unexpected kind: ${result.failureKind}`);
+  assert(result.isRepoStateIssue === true, "Non-fast-forward should be a repo state issue");
+  assert(result.shouldRetry === false, "Non-fast-forward should not retry blindly");
+  assert(result.recommendedNextStep.includes("Do not force push"), "Non-fast-forward guidance must reject force push");
+
+  return "non_fast_forward => stop without force push";
+}
+
+async function testGitHubPushRemoteRejectedClassified(): Promise<string> {
+  const result = classifyGitHubPushVerification({
+    stderr: "! [remote rejected] main -> main (protected branch hook declined)",
+    exitCode: 1,
+  });
+
+  assert(result.failureKind === "remote_rejected", `Unexpected kind: ${result.failureKind}`);
+  assert(result.isRepoStateIssue === true, "Remote rejected should be a repo state issue");
+  assert(result.shouldRetry === false, "Remote rejected should not retry blindly");
+  assert(result.shouldStop === true, "Remote rejected should stop");
+
+  return "remote_rejected => stop for remote policy";
+}
+
+async function testGitHubPushSuccessClassified(): Promise<string> {
+  const result = classifyGitHubPushVerification({
+    stdout: "To github.com:example/repo.git\n   1234567..89abcde  main -> main",
+    exitCode: 0,
+  });
+
+  assert(result.status === "success", "Successful output should pass verification");
+  assert(result.failureKind === undefined, `Success should not have failure kind: ${result.failureKind}`);
+  assert(result.shouldStop === false, "Success should not stop");
+  assert(result.shouldRetry === false, "Success should not retry");
+
+  return "success => verification succeeded";
+}
+
+async function testGitHubPushUnknownErrorClassified(): Promise<string> {
+  const result = classifyGitHubPushVerification({
+    stderr: "fatal: unexpected remote helper failure without a known signature",
+    exitCode: 128,
+  });
+
+  assert(result.failureKind === "unknown_failure", `Unexpected kind: ${result.failureKind}`);
+  assert(result.isNetworkIssue === false, "Unknown failure should not be guessed as network");
+  assert(result.shouldRetry === false, "Unknown failure should not retry");
+  assert(result.shouldStop === true, "Unknown failure should stop and report");
+
+  return "unknown_failure => stop and report";
+}
+
 async function main(): Promise<void> {
   console.log("AI Dev OS V4.4.6 Verification");
   console.log("");
@@ -1501,6 +1635,15 @@ async function main(): Promise<void> {
   await runTest("Untrusted repo is rejected", testUntrustedRepoRejected);
   await runTest("Manifest skills can batch register", testManifestSkillsBatchRegistration);
   await runTest("Manifest skill execution is placeholder only", testManifestSkillExecutionPlaceholder);
+  await runTest("GitHub push helper classifies connection reset as retryable network issue", testGitHubPushConnectionResetClassifiedAsNetworkRetry);
+  await runTest("GitHub push helper classifies port 443 connection failure", testGitHubPushPort443ClassifiedAsNetwork);
+  await runTest("GitHub push helper classifies DNS failure", testGitHubPushDnsFailureClassified);
+  await runTest("GitHub push helper classifies authentication failure", testGitHubPushAuthenticationFailureClassified);
+  await runTest("GitHub push helper classifies permission denied", testGitHubPushPermissionDeniedClassified);
+  await runTest("GitHub push helper classifies non-fast-forward", testGitHubPushNonFastForwardClassified);
+  await runTest("GitHub push helper classifies remote rejected", testGitHubPushRemoteRejectedClassified);
+  await runTest("GitHub push helper classifies successful push output", testGitHubPushSuccessClassified);
+  await runTest("GitHub push helper classifies unknown errors", testGitHubPushUnknownErrorClassified);
   await runTest("V4.3 verification still passes", testV43StillPasses);
 
   const passed = results.filter((result) => result.status === "PASS").length;
