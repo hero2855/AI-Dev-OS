@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "verify:v43": "tsx tests/verify-v43.ts",
     "verify:v44": "tsx tests/verify-v44.ts"
   },

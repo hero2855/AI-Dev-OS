@@ -29,7 +29,7 @@ function stringify(value: unknown): string {
 async function runTest(name: string, test: () => Promise<string | void> | string | void): Promise<void> {
   try {
     const details = await test();
-    record("PASS", name, details);
+    record("PASS", name, details === undefined ? undefined : details);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     record("FAIL", name, message);

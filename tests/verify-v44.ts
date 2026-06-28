@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { classifyGitHubPushVerification } from "../github-helper";
+import { analyzeTypeScriptHealth } from "../project-health";
 import {
   assertManifestMatchesLock,
   assertSha256Integrity,
@@ -49,7 +50,7 @@ function record(status: TestStatus, name: string, details?: string): void {
 async function runTest(name: string, test: () => Promise<string | void> | string | void): Promise<void> {
   try {
     const details = await test();
-    record("PASS", name, details);
+    record("PASS", name, details === undefined ? undefined : details);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     record("FAIL", name, message);
@@ -402,11 +403,12 @@ async function testHealthCheckProtectedWarning(): Promise<string> {
 
 async function testHealthCheckResumeAiNotSystemCore(): Promise<string> {
   const project = getWorkspaceProjectById("project-001-resume-ai");
+  const projectType = project?.type;
 
-  assert(project?.type === "product-app", `Unexpected Resume AI project type: ${project?.type}`);
-  assert(project.type !== "system-core", "Resume AI must not be system-core");
+  assert(projectType === "product-app", `Unexpected Resume AI project type: ${projectType}`);
+  assert(String(projectType) !== "system-core", "Resume AI must not be system-core");
 
-  return `type=${project.type}`;
+  return `type=${projectType}`;
 }
 
 async function testHealthCheckPackageJsonDetection(): Promise<string> {
@@ -498,6 +500,64 @@ async function testHealthCheckDoesNotModifySkillsRepo(): Promise<string> {
   assert(beforeRootExists === afterRootExists, "AI-Dev-OS-skills root existence changed during health check");
 
   return "AI-Dev-OS-skills root existence unchanged";
+}
+
+async function testTypeScriptHealthBlocksMissingNodeTypes(): Promise<string> {
+  const diagnostic = analyzeTypeScriptHealth({
+    hasTypeScriptDependency: true,
+    hasNodeTypesDependency: false,
+    hasTypecheckScript: true,
+    exitCode: 2,
+    output: [
+      "project-health/detectors.ts(1,42): error TS2307: Cannot find module 'node:fs' or its corresponding type declarations.",
+      "tests/verify-v44.ts(40,29): error TS2580: Cannot find name 'process'. Do you need to install type definitions for node?",
+    ].join("\n"),
+  });
+
+  assert(diagnostic.status === "blocked", `Expected blocked TypeScript health, got ${diagnostic.status}`);
+  assert(diagnostic.canRunLocalTypecheck === true, "Local typecheck should be runnable when TypeScript and script exist");
+  assert(diagnostic.missingDependencies.includes("@types/node"), "Diagnostic should report missing @types/node");
+  assert(
+    diagnostic.issues.some((issue) => issue.kind === "missing_node_types"),
+    `Expected missing_node_types issue, got ${diagnostic.issues.map((issue) => issue.kind).join(", ")}`,
+  );
+
+  return "TypeScript health reports missing Node typings as blocked";
+}
+
+async function testTypeScriptHealthPassesCleanLocalTypecheck(): Promise<string> {
+  const diagnostic = analyzeTypeScriptHealth({
+    hasTypeScriptDependency: true,
+    hasNodeTypesDependency: true,
+    hasTypecheckScript: true,
+    exitCode: 0,
+    output: "",
+  });
+
+  assert(diagnostic.status === "pass", `Expected pass TypeScript health, got ${diagnostic.status}`);
+  assert(diagnostic.issues.length === 0, `Expected no TypeScript health issues, got ${diagnostic.issues.length}`);
+  assert(diagnostic.missingDependencies.length === 0, "Clean local typecheck should not report missing dependencies");
+
+  return "TypeScript health can report a passing local typecheck";
+}
+
+async function testTypeScriptHealthFailsStrictErrorsWhenDependenciesPresent(): Promise<string> {
+  const diagnostic = analyzeTypeScriptHealth({
+    hasTypeScriptDependency: true,
+    hasNodeTypesDependency: true,
+    hasTypecheckScript: true,
+    exitCode: 2,
+    output: "agent-core/loop.ts(73,13): error TS7022: 'plan' implicitly has type 'any' because it is referenced directly or indirectly in its own initializer.",
+  });
+
+  assert(diagnostic.status === "fail", `Expected fail TypeScript health, got ${diagnostic.status}`);
+  assert(
+    diagnostic.issues.some((issue) => issue.kind === "strict_type_error"),
+    `Expected strict_type_error issue, got ${diagnostic.issues.map((issue) => issue.kind).join(", ")}`,
+  );
+  assert(diagnostic.missingDependencies.length === 0, "Strict errors should not be reported as missing dependencies");
+
+  return "TypeScript health reports strict errors once dependencies are present";
 }
 
 async function testHealthCheckFakeProjectBlocked(): Promise<string> {
@@ -1584,6 +1644,9 @@ async function main(): Promise<void> {
   await runTest("Project Health Check does not modify .env", testHealthCheckDoesNotModifyEnv);
   await runTest("Project Health Check does not modify Project-001-Resume-AI", testHealthCheckDoesNotModifyResumeAi);
   await runTest("Project Health Check does not modify AI-Dev-OS-skills", testHealthCheckDoesNotModifySkillsRepo);
+  await runTest("TypeScript Health reports missing Node typings as blocked", testTypeScriptHealthBlocksMissingNodeTypes);
+  await runTest("TypeScript Health can report passing local typecheck", testTypeScriptHealthPassesCleanLocalTypecheck);
+  await runTest("TypeScript Health reports strict errors when dependencies are present", testTypeScriptHealthFailsStrictErrorsWhenDependenciesPresent);
   await runTest("Project Health Check blocks missing fake project", testHealthCheckFakeProjectBlocked);
   await runTest("Workspace project list contains 3 projects", testWorkspaceProjectListContainsThreeProjects);
   await runTest("Workspace can get ai-dev-os by id", testWorkspaceGetAiDevOsById);

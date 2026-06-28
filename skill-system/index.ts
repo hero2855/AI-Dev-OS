@@ -90,8 +90,18 @@ export {
   fileExists,
   readJsonFileSafe,
   runProjectHealthCheck,
+  analyzeTypeScriptHealth,
 } from "../project-health";
-export type { ProjectHealthCheckResult, ProjectHealthStatus, ProjectRuntime } from "../project-health";
+export type {
+  ProjectHealthCheckResult,
+  ProjectHealthStatus,
+  ProjectRuntime,
+  TypeScriptHealthDiagnostic,
+  TypeScriptHealthInput,
+  TypeScriptHealthIssue,
+  TypeScriptHealthIssueKind,
+  TypeScriptHealthStatus,
+} from "../project-health";
 export { createSafeDevelopmentWorkflow, createWorkflowApprovalRecord, shouldBlockWorkflow } from "../development-workflow";
 export type {
   CreateSafeDevelopmentWorkflowOptions,

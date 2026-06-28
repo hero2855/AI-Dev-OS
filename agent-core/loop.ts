@@ -70,7 +70,7 @@ export async function runMultiAgentLoop(goal: string): Promise<MultiAgentLoopOut
   for (let index = 0; index < MAX_ITERATIONS; index += 1) {
     try {
       const memoryHistory = getMemory(normalizedGoal);
-      const plan =
+      const plan: AgentControllerOutput =
         retryPlan ||
         (await plannerAgent({
           goal: buildPlannerGoal(normalizedGoal, actionableCritic),
