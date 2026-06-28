@@ -28,6 +28,7 @@ import {
   registerGitHubSkillsFromManifestIndex,
   runProjectHealthCheck,
   runGitHubSkillV1Request,
+  runBrowserSkillV1Request,
   runSkillRuntimeRequest,
   selectProjectForGoal,
   shouldBlockWorkflow,
@@ -1012,6 +1013,160 @@ async function testGitHubSkillV1ResultIncludesRequiredShape(): Promise<string> {
   assert(result.summary.includes("GitHub Skill v1"), `Result should include summary: ${result.summary}`);
 
   return "GitHub Skill v1 result includes action, risk, approval, blocked reasons, permissions, capabilities, and summary";
+}
+
+async function testBrowserSkillV1ReadMockPlanWorks(): Promise<string> {
+  const result = runBrowserSkillV1Request({
+    goal: "read a local mock page",
+    mode: "mock",
+    action: {
+      type: "browser:read",
+      description: "Read a mock/local page snapshot.",
+      input: { url: "mock://local/page" },
+    },
+  });
+
+  assert(result.status === "completed", `Expected completed browser:read, got ${result.status}`);
+  assert(result.actionType === "browser:read", `Unexpected action type: ${result.actionType}`);
+  assert(result.riskLevel === "low", `Expected low risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === false, "browser:read mock/local plan should not require approval");
+  assert(result.permissions.includes("browser:read"), "browser:read permission should be reported");
+  assert(result.capabilities.includes("browser_read"), "browser_read capability should be reported");
+  assert(result.plannedAction.advisoryOnly === true, "Browser Skill v1 read should be advisory only");
+  assert(result.auditSummary.realBrowserOperation === false, "browser:read must not perform real browser work");
+  assert(result.auditSummary.realNetworkOperation === false, "browser:read must not perform real network work");
+
+  return result.summary;
+}
+
+async function testBrowserSkillV1WriteRequiresApproval(): Promise<string> {
+  const result = runBrowserSkillV1Request({
+    goal: "plan browser write",
+    mode: "mock",
+    action: {
+      type: "browser:write",
+      description: "Plan a browser write without executing it.",
+    },
+  });
+
+  assert(result.status === "blocked" || result.status === "requires_approval", `Expected blocked/approval browser:write, got ${result.status}`);
+  assert(result.requiresApproval === true, "browser:write should require approval");
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.permissions.includes("browser:write"), "browser:write permission should be reported");
+  assert(result.capabilities.includes("browser_write"), "browser_write capability should be reported");
+  assert(result.plannedAction.realOperationPerformed === false, "browser:write should only return a planned action");
+  assert(result.summary.includes("No real browser action was performed"), `Unexpected summary: ${result.summary}`);
+
+  return "Browser Skill v1 browser:write is approval-gated/planned only";
+}
+
+async function testBrowserSkillV1PublishingIntentsApprovalGated(): Promise<string> {
+  const cases = [
+    { label: "publish", description: "Plan to publish a post from a browser." },
+    { label: "comment", description: "Plan to comment on a browser page." },
+    { label: "reply", description: "Plan to reply to a browser thread." },
+    { label: "upload", description: "Plan to upload a file through a browser." },
+  ];
+
+  for (const item of cases) {
+    const result = runBrowserSkillV1Request({
+      goal: `plan browser ${item.label}`,
+      mode: "mock",
+      action: {
+        type: "browser:write",
+        description: item.description,
+      },
+    });
+
+    assert(result.status === "blocked" || result.status === "requires_approval", `${item.label} should be blocked/approval-gated, got ${result.status}`);
+    assert(result.requiresApproval === true, `${item.label} should require approval`);
+    assert(
+      result.blockedReasons.some((reason) => reason.toLowerCase().includes(item.label)),
+      `${item.label} blocked reasons should mention the intent: ${result.blockedReasons.join(", ")}`,
+    );
+    assert(result.auditSummary.realPublishOperation === false, `${item.label} must not publish`);
+    assert(result.auditSummary.realBrowserOperation === false, `${item.label} must not use a real browser`);
+  }
+
+  return "Browser publish/comment/reply/upload intents are blocked or approval-gated";
+}
+
+async function testBrowserSkillV1ResultIncludesRequiredShape(): Promise<string> {
+  const result = runBrowserSkillV1Request({
+    goal: "inspect browser result shape",
+    mode: "local",
+    action: {
+      type: "browser:read",
+      description: "Read local browser fixture.",
+    },
+    capabilities: ["browser_fixture_read"],
+    permissions: ["browser:read"],
+  });
+
+  assert(typeof result.riskLevel === "string", "Result should include riskLevel");
+  assert(typeof result.requiresApproval === "boolean", "Result should include requiresApproval");
+  assert(Array.isArray(result.blockedReasons), "Result should include blockedReasons");
+  assert(Array.isArray(result.permissions), "Result should include permissions");
+  assert(Array.isArray(result.capabilities), "Result should include capabilities");
+  assert(typeof result.summary === "string" && result.summary.length > 0, "Result should include summary");
+  assert(result.permissions.includes("browser:read"), "Result should include browser:read permission");
+  assert(result.capabilities.includes("browser_read"), "Result should include browser_read capability");
+  assert(result.capabilities.includes("browser_fixture_read"), "Result should include requested capability");
+
+  return "Browser Skill v1 result includes risk, approval, blocked reasons, permissions, capabilities, and summary";
+}
+
+async function testBrowserSkillV1ExternalRuntimeBlocked(): Promise<string> {
+  const result = runBrowserSkillV1Request({
+    goal: "try external browser runtime",
+    mode: "external",
+    action: {
+      type: "browser:read",
+      description: "Read using an external browser runtime.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected blocked external browser runtime, got ${result.status}`);
+  assert(result.requiresApproval === true, "External browser runtime should require approval/blocking");
+  assert(
+    result.blockedReasons.includes("External browser runtime is disabled in Browser Skill v1"),
+    `Missing external browser block reason: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "External browser runtime blocked";
+}
+
+async function testBrowserSkillV1NoRealOperationsOccur(): Promise<string> {
+  const before = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(before.status === 0, `git status before browser adapter failed: ${before.stderr}`);
+
+  const result = runBrowserSkillV1Request({
+    goal: "browser no-op audit",
+    mode: "mock",
+    action: {
+      type: "browser:read",
+      description: "Read mock browser fixture only.",
+    },
+  });
+
+  const after = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(after.status === 0, `git status after browser adapter failed: ${after.stderr}`);
+  assert(after.stdout === before.stdout, `Browser adapter changed git status:\nBefore:\n${before.stdout}\nAfter:\n${after.stdout}`);
+  assert(result.auditSummary.realNetworkOperation === false, "Browser Skill v1 must not perform network operations");
+  assert(result.auditSummary.realBrowserOperation === false, "Browser Skill v1 must not perform browser operations");
+  assert(result.auditSummary.realComputerOperation === false, "Browser Skill v1 must not perform computer operations");
+  assert(result.auditSummary.realShellOperation === false, "Browser Skill v1 must not perform shell operations");
+  assert(result.auditSummary.realPublishOperation === false, "Browser Skill v1 must not perform publish operations");
+
+  return "Browser Skill v1 performed no real network/browser/computer/shell/publish operation";
 }
 
 async function testPonytailTrustedRepoAcceptedMetadataOnly(): Promise<string> {
@@ -2658,6 +2813,12 @@ async function main(): Promise<void> {
   await runTest("GitHub Skill v1 unknown policy is blocked", testGitHubSkillV1UnknownPolicyBlocked);
   await runTest("GitHub Skill v1 validates integrity when available", testGitHubSkillV1IntegrityValidation);
   await runTest("GitHub Skill v1 result includes required action shape", testGitHubSkillV1ResultIncludesRequiredShape);
+  await runTest("Browser Skill v1 mock browser:read plan works", testBrowserSkillV1ReadMockPlanWorks);
+  await runTest("Browser Skill v1 browser:write requires approval", testBrowserSkillV1WriteRequiresApproval);
+  await runTest("Browser Skill v1 publish/comment/reply/upload intents are blocked or approval-gated", testBrowserSkillV1PublishingIntentsApprovalGated);
+  await runTest("Browser Skill v1 result includes required action shape", testBrowserSkillV1ResultIncludesRequiredShape);
+  await runTest("Browser Skill v1 external runtime is blocked", testBrowserSkillV1ExternalRuntimeBlocked);
+  await runTest("Browser Skill v1 performs no real network/browser/computer/shell operation", testBrowserSkillV1NoRealOperationsOccur);
   await runTest("Ponytail trusted repo accepted as metadata-only source", testPonytailTrustedRepoAcceptedMetadataOnly);
   await runTest("Ponytail coding skill capabilities recognized", testPonytailCodingSkillCapabilitiesRecognized);
   await runTest("Ponytail remote code execution remains blocked", testPonytailRemoteCodeExecutionBlocked);

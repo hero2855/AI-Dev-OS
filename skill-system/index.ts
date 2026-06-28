@@ -160,3 +160,11 @@ export type {
   GitHubSkillV1Request,
   GitHubSkillV1Result,
 } from "../github-skill";
+export { runBrowserSkillV1Request } from "../browser-skill";
+export type {
+  BrowserSkillV1Action,
+  BrowserSkillV1ActionType,
+  BrowserSkillV1PlannedAction,
+  BrowserSkillV1Request,
+  BrowserSkillV1Result,
+} from "../browser-skill";
