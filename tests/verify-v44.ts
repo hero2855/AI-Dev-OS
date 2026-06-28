@@ -21,10 +21,12 @@ import {
   listWorkspaceProjects,
   registerGitHubSkillsFromManifestIndex,
   runProjectHealthCheck,
+  runGitHubSkillV1Request,
   runSkillRuntimeRequest,
   selectProjectForGoal,
   shouldBlockWorkflow,
   sha256Text,
+  validateGitHubSkillV1Manifest,
   validateSkillPolicy,
 } from "../skill-system";
 import type { GitHubSkillManifest, ProjectHealthCheckResult, SkillManifestLock, WorkspaceProject } from "../skill-system";
@@ -762,6 +764,191 @@ async function testSkillRuntimeNoRealOperationsOccur(): Promise<string> {
   assert(result.auditSummary.realPublishOperation === false, "Runtime adapter must not perform publish operations");
 
   return "Skill runtime adapter performed no real network/browser/computer/shell/publish operation";
+}
+
+function createGitHubSkillV1TestManifest(overrides: Partial<GitHubSkillManifest> = {}): GitHubSkillManifest {
+  return {
+    name: "github-v1-test-skill",
+    version: "0.1.0",
+    description: "GitHub Skill v1 test manifest",
+    entry: "index.ts",
+    capabilities: ["github_search", "repo_discovery"],
+    permissions: ["network:github"],
+    ...overrides,
+  };
+}
+
+async function testGitHubSkillV1ReadCompletesOffline(): Promise<string> {
+  const manifest = createGitHubSkillV1TestManifest();
+  const result = runGitHubSkillV1Request({
+    repoUrl: trustedRepo,
+    manifestPath: "skills/github-v1-test/skill.json",
+    manifest,
+    mode: "mock",
+    action: {
+      type: "github:read",
+      description: "Read repository metadata offline.",
+    },
+  });
+
+  assert(result.status === "completed", `Expected completed GitHub Skill v1 read, got ${result.status}`);
+  assert(result.actionType === "github:read", `Unexpected action type: ${result.actionType}`);
+  assert(result.riskLevel === "low", `Expected low risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === false, "GitHub Skill v1 read should not require approval");
+  assert(result.capabilities.includes("github_search"), "Manifest capability should be present");
+  assert(result.permissions.includes("network:github"), "Manifest permission should be present");
+  assert(result.runtimeResult?.auditSummary.realNetworkOperation === false, "GitHub Skill v1 read must not perform real network");
+
+  return result.summary;
+}
+
+async function testGitHubSkillV1WriteRequiresApprovalOnly(): Promise<string> {
+  const manifest = createGitHubSkillV1TestManifest();
+  const result = runGitHubSkillV1Request({
+    repoUrl: trustedRepo,
+    manifestPath: "skills/github-v1-test/skill.json",
+    manifest,
+    mode: "mock",
+    action: {
+      type: "github:write",
+      description: "Would write to GitHub.",
+    },
+  });
+
+  assert(result.status === "requires_approval", `Expected requires_approval, got ${result.status}`);
+  assert(result.actionType === "github:write", `Unexpected action type: ${result.actionType}`);
+  assert(result.riskLevel === "high", `Expected high risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === true, "GitHub Skill v1 write should require approval");
+  assert(result.blockedReasons.length === 0, `Valid planned write should not be blocked: ${result.blockedReasons.join(", ")}`);
+  assert(result.summary.includes("planned approval-gated action only"), `Unexpected summary: ${result.summary}`);
+
+  return "GitHub Skill v1 write is planned and approval-gated only";
+}
+
+async function testGitHubSkillV1UntrustedManifestBlocked(): Promise<string> {
+  const result = runGitHubSkillV1Request({
+    repoUrl: untrustedRepo,
+    manifestPath: "skills/bad/skill.json",
+    manifest: createGitHubSkillV1TestManifest(),
+    mode: "mock",
+    action: {
+      type: "github:read",
+      description: "Read untrusted manifest.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected blocked untrusted manifest, got ${result.status}`);
+  assert(result.manifestValidation.trustedRepo === false, "Untrusted repo should be reported");
+  assert(result.blockedReasons.includes("Untrusted GitHub skill repo"), `Missing untrusted reason: ${result.blockedReasons.join(", ")}`);
+
+  return "Untrusted GitHub Skill v1 manifest blocked";
+}
+
+async function testGitHubSkillV1InvalidSchemaBlocked(): Promise<string> {
+  const result = runGitHubSkillV1Request({
+    repoUrl: trustedRepo,
+    manifestPath: "skills/invalid/skill.json",
+    manifest: {
+      name: "missing-version",
+      description: "Invalid manifest without version",
+      entry: "index.ts",
+      capabilities: ["github_search"],
+      permissions: ["network:github"],
+    },
+    mode: "mock",
+    action: {
+      type: "github:read",
+      description: "Read invalid manifest.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected blocked invalid schema, got ${result.status}`);
+  assert(result.manifestValidation.schemaValid === false, "Invalid schema should be reported");
+  assert(
+    result.blockedReasons.some((reason) => reason.includes("version is required")),
+    `Missing version schema reason: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Invalid GitHub Skill v1 manifest schema blocked";
+}
+
+async function testGitHubSkillV1UnknownPolicyBlocked(): Promise<string> {
+  const result = runGitHubSkillV1Request({
+    repoUrl: trustedRepo,
+    manifestPath: "skills/unknown-policy/skill.json",
+    manifest: createGitHubSkillV1TestManifest({
+      capabilities: ["unknown_capability"],
+      permissions: ["network:github"],
+    }),
+    mode: "mock",
+    action: {
+      type: "github:read",
+      description: "Read unknown policy manifest.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected blocked unknown policy, got ${result.status}`);
+  assert(result.manifestValidation.policyValid === false, "Unknown capability should fail policy validation");
+  assert(
+    result.blockedReasons.some((reason) => reason.includes("Unknown skill capability")),
+    `Missing unknown capability reason: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Unknown GitHub Skill v1 manifest capability blocked";
+}
+
+async function testGitHubSkillV1IntegrityValidation(): Promise<string> {
+  const manifest = createGitHubSkillV1TestManifest();
+  const manifestText = stableJson(manifest);
+  const ok = validateGitHubSkillV1Manifest({
+    repoUrl: trustedRepo,
+    manifestPath: "skills/github-v1-test/skill.json",
+    manifest,
+    manifestText,
+    expectedSha256: sha256Text(manifestText),
+  });
+  const bad = validateGitHubSkillV1Manifest({
+    repoUrl: trustedRepo,
+    manifestPath: "skills/github-v1-test/skill.json",
+    manifest,
+    manifestText,
+    expectedSha256: "0".repeat(64),
+  });
+
+  assert(ok.integrityChecked === true, "Integrity should be checked when sha is provided");
+  assert(ok.integrityValid === true, "Expected matching integrity to pass");
+  assert(ok.blockedReasons.length === 0, `Matching integrity should not block: ${ok.blockedReasons.join(", ")}`);
+  assert(bad.integrityValid === false, "Expected mismatched integrity to fail");
+  assert(
+    bad.blockedReasons.some((reason) => reason.includes("Integrity check failed")),
+    `Missing integrity failure reason: ${bad.blockedReasons.join(", ")}`,
+  );
+
+  return "GitHub Skill v1 integrity validation supports pass and failure";
+}
+
+async function testGitHubSkillV1ResultIncludesRequiredShape(): Promise<string> {
+  const manifest = createGitHubSkillV1TestManifest();
+  const result = runGitHubSkillV1Request({
+    repoUrl: trustedRepo,
+    manifestPath: "skills/github-v1-test/skill.json",
+    manifest,
+    mode: "mock",
+    action: {
+      type: "github:read",
+      description: "Read repository metadata offline.",
+    },
+  });
+
+  assert(result.actionType === "github:read", `Unexpected action type: ${result.actionType}`);
+  assert(typeof result.riskLevel === "string", "Result should include riskLevel");
+  assert(typeof result.requiresApproval === "boolean", "Result should include requiresApproval");
+  assert(Array.isArray(result.blockedReasons), "Result should include blockedReasons");
+  assert(result.permissions.length > 0, "Result should include permissions");
+  assert(result.capabilities.length > 0, "Result should include capabilities");
+  assert(result.summary.includes("GitHub Skill v1"), `Result should include summary: ${result.summary}`);
+
+  return "GitHub Skill v1 result includes action, risk, approval, blocked reasons, permissions, capabilities, and summary";
 }
 
 async function testHealthCheckAiDevOs(): Promise<string> {
@@ -2077,6 +2264,13 @@ async function main(): Promise<void> {
   await runTest("Skill Runtime result includes required safety shape", testSkillRuntimeResultIncludesRequiredShape);
   await runTest("Skill Runtime unsupported external mode is blocked", testSkillRuntimeExternalModeBlocked);
   await runTest("Skill Runtime performs no real network/browser/computer/shell operation", testSkillRuntimeNoRealOperationsOccur);
+  await runTest("GitHub Skill v1 mock github:read can complete offline", testGitHubSkillV1ReadCompletesOffline);
+  await runTest("GitHub Skill v1 github:write is planned and approval-gated only", testGitHubSkillV1WriteRequiresApprovalOnly);
+  await runTest("GitHub Skill v1 untrusted manifests are blocked", testGitHubSkillV1UntrustedManifestBlocked);
+  await runTest("GitHub Skill v1 invalid schema is blocked", testGitHubSkillV1InvalidSchemaBlocked);
+  await runTest("GitHub Skill v1 unknown policy is blocked", testGitHubSkillV1UnknownPolicyBlocked);
+  await runTest("GitHub Skill v1 validates integrity when available", testGitHubSkillV1IntegrityValidation);
+  await runTest("GitHub Skill v1 result includes required action shape", testGitHubSkillV1ResultIncludesRequiredShape);
   await runTest("Sandbox can write safe.txt inside rootDir", testSandboxWritesSafeFile);
   await runTest("Sandbox can read safe.txt inside rootDir", testSandboxReadsSafeFile);
   await runTest("Sandbox can list rootDir", testSandboxListsRootDir);

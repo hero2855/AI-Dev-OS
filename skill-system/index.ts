@@ -137,3 +137,10 @@ export type {
   SkillRuntimeSafetyCheck,
   SkillRuntimeStatus,
 } from "../skill-runtime";
+export { runGitHubSkillV1Request, validateGitHubSkillV1Manifest } from "../github-skill";
+export type {
+  GitHubSkillV1ManifestInput,
+  GitHubSkillV1ManifestValidation,
+  GitHubSkillV1Request,
+  GitHubSkillV1Result,
+} from "../github-skill";
