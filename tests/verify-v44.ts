@@ -21,6 +21,7 @@ import {
   listWorkspaceProjects,
   registerGitHubSkillsFromManifestIndex,
   runProjectHealthCheck,
+  runSkillRuntimeRequest,
   selectProjectForGoal,
   shouldBlockWorkflow,
   sha256Text,
@@ -570,6 +571,197 @@ async function testChangeSetPreviewDoesNotModifyFiles(): Promise<string> {
   assert(after.stdout === before.stdout, `ChangeSet preview changed git status:\nBefore:\n${before.stdout}\nAfter:\n${after.stdout}`);
 
   return "ChangeSet preview did not modify repo files";
+}
+
+async function testSkillRuntimeMockGithubReadCompletes(): Promise<string> {
+  const result = runSkillRuntimeRequest({
+    goal: "mock GitHub read",
+    skillName: "github-search-skill",
+    mode: "mock",
+    action: {
+      type: "github:read",
+      description: "Read mock GitHub metadata.",
+    },
+  });
+
+  assert(result.status === "completed", `Expected completed github:read, got ${result.status}`);
+  assert(result.actionType === "github:read", `Unexpected action type: ${result.actionType}`);
+  assert(result.auditSummary.realNetworkOperation === false, "github:read mock must not perform real network");
+  assert(result.requiresApproval === false, "github:read mock should not require approval");
+
+  return result.summary;
+}
+
+async function testSkillRuntimeGithubWriteBlocked(): Promise<string> {
+  const result = runSkillRuntimeRequest({
+    goal: "mock GitHub write",
+    skillName: "github-writer",
+    mode: "mock",
+    action: {
+      type: "github:write",
+      description: "Would open or update a GitHub resource.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected blocked github:write, got ${result.status}`);
+  assert(result.requiresApproval === true, "github:write should require approval");
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.blockedReasons.some((reason) => reason.includes("github:write")), "Blocked reason should mention github:write");
+
+  return "github:write blocked until explicit approval";
+}
+
+async function testSkillRuntimeBrowserWriteBlocked(): Promise<string> {
+  const result = runSkillRuntimeRequest({
+    goal: "mock browser write",
+    skillName: "browser-skill",
+    mode: "mock",
+    action: {
+      type: "browser:write",
+      description: "Would click a browser button.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected blocked browser:write, got ${result.status}`);
+  assert(result.requiresApproval === true, "browser:write should require approval");
+  assert(result.auditSummary.realBrowserOperation === false, "browser:write must not perform real browser work");
+
+  return "browser:write blocked in V4.10";
+}
+
+async function testSkillRuntimeComputerActBlocked(): Promise<string> {
+  const result = runSkillRuntimeRequest({
+    goal: "mock computer action",
+    skillName: "computer-use-skill",
+    mode: "mock",
+    action: {
+      type: "computer:act",
+      description: "Would perform an OS action.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected blocked computer:act, got ${result.status}`);
+  assert(result.requiresApproval === true, "computer:act should require approval");
+  assert(result.auditSummary.realComputerOperation === false, "computer:act must not perform real computer work");
+
+  return "computer:act blocked in V4.10";
+}
+
+async function testSkillRuntimeContentCreateCompletes(): Promise<string> {
+  const result = runSkillRuntimeRequest({
+    goal: "create draft content",
+    skillName: "content-writer",
+    mode: "local",
+    action: {
+      type: "content:create",
+      description: "Create mock draft content.",
+      input: { topic: "safe local draft" },
+    },
+  });
+
+  assert(result.status === "completed", `Expected completed content:create, got ${result.status}`);
+  assert(result.riskLevel === "low", `Expected low risk, got ${result.riskLevel}`);
+  assert(result.auditSummary.realPublishOperation === false, "content:create must not publish");
+
+  return "content:create completed in local mode";
+}
+
+async function testSkillRuntimeContentPublishBlocked(): Promise<string> {
+  const result = runSkillRuntimeRequest({
+    goal: "publish content",
+    skillName: "publisher",
+    mode: "mock",
+    action: {
+      type: "content:publish",
+      description: "Would publish approved content.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected blocked content:publish, got ${result.status}`);
+  assert(result.requiresApproval === true, "content:publish should require approval");
+  assert(result.auditSummary.realPublishOperation === false, "content:publish must not perform real publishing");
+
+  return "content:publish blocked in V4.10";
+}
+
+async function testSkillRuntimeResultIncludesRequiredShape(): Promise<string> {
+  const result = runSkillRuntimeRequest({
+    goal: "inspect runtime result shape",
+    skillName: "content-writer",
+    mode: "mock",
+    action: {
+      type: "content:create",
+      description: "Create mock draft content.",
+    },
+    capabilities: ["custom_content_capability"],
+    permissions: ["custom:local"],
+  });
+
+  assert(result.actionType === "content:create", `Unexpected action type: ${result.actionType}`);
+  assert(result.capabilities.includes("content_create"), "Result should include inferred capability");
+  assert(result.capabilities.includes("custom_content_capability"), "Result should include requested capability");
+  assert(result.permissions.includes("content:create:local"), "Result should include inferred permission");
+  assert(result.permissions.includes("custom:local"), "Result should include requested permission");
+  assert(typeof result.riskLevel === "string", "Result should include riskLevel");
+  assert(typeof result.requiresApproval === "boolean", "Result should include requiresApproval");
+  assert(Array.isArray(result.blockedReasons), "Result should include blockedReasons");
+  assert(result.summary.includes("No real operation was performed"), `Unexpected summary: ${result.summary}`);
+
+  return "Skill runtime result includes action type, capabilities, permissions, risk, approval, blocked reasons, and summary";
+}
+
+async function testSkillRuntimeExternalModeBlocked(): Promise<string> {
+  const result = runSkillRuntimeRequest({
+    goal: "external runtime test",
+    skillName: "external-skill",
+    mode: "external",
+    action: {
+      type: "github:read",
+      description: "Would use an external runtime.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected blocked external mode, got ${result.status}`);
+  assert(
+    result.blockedReasons.includes("External runtime mode is disabled in V4.10"),
+    `Missing external mode blocked reason: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "external runtime mode blocked";
+}
+
+async function testSkillRuntimeNoRealOperationsOccur(): Promise<string> {
+  const before = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(before.status === 0, `git status before runtime adapter failed: ${before.stderr}`);
+
+  const result = runSkillRuntimeRequest({
+    goal: "mock offline runtime audit",
+    skillName: "offline-runtime-skill",
+    mode: "mock",
+    action: {
+      type: "content:create",
+      description: "Would create local mock content.",
+    },
+  });
+
+  const after = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(after.status === 0, `git status after runtime adapter failed: ${after.stderr}`);
+  assert(after.stdout === before.stdout, `Runtime adapter changed git status:\nBefore:\n${before.stdout}\nAfter:\n${after.stdout}`);
+  assert(result.auditSummary.realNetworkOperation === false, "Runtime adapter must not perform network operations");
+  assert(result.auditSummary.realBrowserOperation === false, "Runtime adapter must not perform browser operations");
+  assert(result.auditSummary.realComputerOperation === false, "Runtime adapter must not perform computer operations");
+  assert(result.auditSummary.realShellOperation === false, "Runtime adapter must not perform shell operations");
+  assert(result.auditSummary.realPublishOperation === false, "Runtime adapter must not perform publish operations");
+
+  return "Skill runtime adapter performed no real network/browser/computer/shell/publish operation";
 }
 
 async function testHealthCheckAiDevOs(): Promise<string> {
@@ -1876,6 +2068,15 @@ async function main(): Promise<void> {
   await runTest("ChangeSet preview requires approval for protected project changes", testChangeSetProtectedProjectRequiresApproval);
   await runTest("ChangeSet preview includes required result shape", testChangeSetPreviewIncludesShape);
   await runTest("ChangeSet preview does not modify files", testChangeSetPreviewDoesNotModifyFiles);
+  await runTest("Skill Runtime mock github:read action can complete safely", testSkillRuntimeMockGithubReadCompletes);
+  await runTest("Skill Runtime github:write requires approval or is blocked", testSkillRuntimeGithubWriteBlocked);
+  await runTest("Skill Runtime browser:write requires approval or is blocked", testSkillRuntimeBrowserWriteBlocked);
+  await runTest("Skill Runtime computer:act requires approval or is blocked", testSkillRuntimeComputerActBlocked);
+  await runTest("Skill Runtime content:create can run as mock/local action", testSkillRuntimeContentCreateCompletes);
+  await runTest("Skill Runtime content:publish requires approval or is blocked", testSkillRuntimeContentPublishBlocked);
+  await runTest("Skill Runtime result includes required safety shape", testSkillRuntimeResultIncludesRequiredShape);
+  await runTest("Skill Runtime unsupported external mode is blocked", testSkillRuntimeExternalModeBlocked);
+  await runTest("Skill Runtime performs no real network/browser/computer/shell operation", testSkillRuntimeNoRealOperationsOccur);
   await runTest("Sandbox can write safe.txt inside rootDir", testSandboxWritesSafeFile);
   await runTest("Sandbox can read safe.txt inside rootDir", testSandboxReadsSafeFile);
   await runTest("Sandbox can list rootDir", testSandboxListsRootDir);

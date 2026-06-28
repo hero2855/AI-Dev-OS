@@ -125,3 +125,15 @@ export type {
   PlannedChangePreview,
   PlannedFileOperation,
 } from "../change-set";
+export { createSkillRuntimeAdapter, runSkillRuntimeRequest } from "../skill-runtime";
+export type {
+  SkillRuntimeAction,
+  SkillRuntimeActionType,
+  SkillRuntimeAdapter,
+  SkillRuntimeAuditSummary,
+  SkillRuntimeMode,
+  SkillRuntimeRequest,
+  SkillRuntimeResult,
+  SkillRuntimeSafetyCheck,
+  SkillRuntimeStatus,
+} from "../skill-runtime";
