@@ -1922,6 +1922,112 @@ async function testCodeRefactorDryRunPlan(): Promise<string> {
   return "Code refactor dry-run plan requires approval and medium risk";
 }
 
+async function testCodingTaskGetsPonytailGuidanceByDefault(): Promise<string> {
+  const plan = createDryRunExecutionPlan({
+    goal: "implement a small source code fix",
+    skill: createPolicyTestManifest({
+      name: "code-refactor-skill",
+      capabilities: ["code_refactor", "source_editing"],
+      permissions: ["file:read", "file:write:src"],
+    }),
+  });
+  const [guidance] = plan.guidance;
+  const instructionText = guidance?.instructions.join(" ").toLowerCase() ?? "";
+
+  assert(guidance?.source === "ponytail", "Coding task should include Ponytail guidance");
+  assert(guidance.advisoryOnly === true, "Ponytail guidance must be advisory only");
+  assert(instructionText.includes("smallest correct change"), "Guidance should prefer smallest correct change");
+  assert(instructionText.includes("avoid over-engineering"), "Guidance should avoid over-engineering");
+  assert(instructionText.includes("unnecessary abstractions"), "Guidance should avoid unnecessary abstractions");
+  assert(instructionText.includes("preserve existing behavior"), "Guidance should preserve existing behavior");
+  assert(instructionText.includes("readable and maintainable"), "Guidance should keep code readable and maintainable");
+  assert(instructionText.includes("required checks"), "Guidance should require checks before reporting");
+
+  return "Coding dry-run plan includes Ponytail guidance by default";
+}
+
+async function testNonCodingTaskDoesNotForcePonytailGuidance(): Promise<string> {
+  const plan = createDryRunExecutionPlan({
+    goal: "search GitHub repository metadata",
+    skill: createPolicyTestManifest({
+      name: "github-search-skill",
+      capabilities: ["github_search", "repo_discovery"],
+      permissions: ["network:github"],
+    }),
+  });
+
+  assert(plan.guidance.length === 0, `Non-coding plan should not force Ponytail guidance: ${JSON.stringify(plan.guidance)}`);
+
+  return "Non-coding dry-run plan does not force Ponytail guidance";
+}
+
+async function testDefaultPonytailGuidanceRemoteExecutionBlocked(): Promise<string> {
+  const result = runGitHubSkillV1Request({
+    repoUrl: ponytailRepo,
+    manifestPath: ".ai-dev-os/skills/ponytail/skill.json",
+    manifest: createPonytailManifest(),
+    mode: "external",
+    action: {
+      type: "github:read",
+      description: "Attempt to turn default Ponytail guidance into remote execution.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected remote Ponytail execution blocked, got ${result.status}`);
+  assert(
+    result.blockedReasons.includes("External GitHub Skill v1 runtime mode is disabled"),
+    `Missing external runtime block reason: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Default Ponytail guidance does not enable remote execution";
+}
+
+async function testDefaultPonytailGuidanceInstallScriptsHooksBlocked(): Promise<string> {
+  const scriptResult = runGitHubSkillV1Request({
+    repoUrl: ponytailRepo,
+    manifestPath: ".ai-dev-os/skills/ponytail-script/skill.json",
+    manifest: createPonytailManifest({
+      name: "ponytail-script",
+      entry: "package.json#scripts.test",
+      capabilities: ["shell_execute"],
+      permissions: ["shell:execute"],
+    }),
+    mode: "mock",
+    action: {
+      type: "github:read",
+      description: "Attempt Ponytail script execution.",
+    },
+  });
+  const hookResult = runGitHubSkillV1Request({
+    repoUrl: ponytailRepo,
+    manifestPath: ".ai-dev-os/skills/ponytail-hook/skill.json",
+    manifest: createPonytailManifest({
+      name: "ponytail-hook",
+      entry: "hooks/claude-codex-hooks.json",
+      capabilities: ["shell_execute"],
+      permissions: ["shell:execute"],
+    }),
+    mode: "mock",
+    action: {
+      type: "github:read",
+      description: "Attempt Ponytail hook execution.",
+    },
+  });
+
+  assert(scriptResult.status === "blocked", `Expected Ponytail script execution blocked, got ${scriptResult.status}`);
+  assert(hookResult.status === "blocked", `Expected Ponytail hook execution blocked, got ${hookResult.status}`);
+  assert(
+    scriptResult.blockedReasons.includes("Permission shell:execute is disabled in V4.4.4"),
+    `Missing script execution block reason: ${scriptResult.blockedReasons.join(", ")}`,
+  );
+  assert(
+    hookResult.blockedReasons.includes("Permission shell:execute is disabled in V4.4.4"),
+    `Missing hook execution block reason: ${hookResult.blockedReasons.join(", ")}`,
+  );
+
+  return "Default Ponytail guidance does not enable install, script, or hook execution";
+}
+
 async function testShellExecuteDryRunBlocked(): Promise<string> {
   const plan = createDryRunExecutionPlan({
     goal: "run a shell command",
@@ -2578,6 +2684,10 @@ async function main(): Promise<void> {
   await runTest("github-search-skill can generate dry-run plan", testGithubSearchDryRunPlan);
   await runTest("auto-readme-generator can generate dry-run plan", testReadmeDryRunPlan);
   await runTest("code-refactor-skill can generate dry-run plan", testCodeRefactorDryRunPlan);
+  await runTest("Coding task gets Ponytail guidance by default", testCodingTaskGetsPonytailGuidanceByDefault);
+  await runTest("Non-coding task does not force Ponytail guidance", testNonCodingTaskDoesNotForcePonytailGuidance);
+  await runTest("Default Ponytail guidance keeps remote execution blocked", testDefaultPonytailGuidanceRemoteExecutionBlocked);
+  await runTest("Default Ponytail guidance keeps install/scripts/hooks blocked", testDefaultPonytailGuidanceInstallScriptsHooksBlocked);
   await runTest("shell:execute dry-run plan is blocked", testShellExecuteDryRunBlocked);
   await runTest("browser:write dry-run plan is blocked", testBrowserWriteDryRunBlocked);
   await runTest("Unknown skill dry-run plan requires approval", testUnknownSkillDryRunRequiresApproval);

@@ -1,6 +1,6 @@
 import type { GitHubSkillManifest } from "../github/manifest";
 import { assessDryRunRisk } from "./risk";
-import type { DryRunExecutionPlan } from "./types";
+import type { DryRunExecutionPlan, DryRunGuidance } from "./types";
 
 export type DryRunSkillMetadata = Pick<GitHubSkillManifest, "name" | "capabilities" | "permissions">;
 
@@ -27,12 +27,37 @@ const knownSkillPlans: Record<string, { plannedReads: string[]; plannedWrites: s
   },
 };
 
+const ponytailCodingGuidance: DryRunGuidance = {
+  source: "ponytail",
+  appliesTo: "coding",
+  advisoryOnly: true,
+  instructions: [
+    "Make the smallest correct change.",
+    "Avoid over-engineering.",
+    "Avoid unnecessary abstractions.",
+    "Preserve existing behavior.",
+    "Keep code readable and maintainable.",
+    "Run required checks before reporting.",
+  ],
+};
+
+const codingCapabilities = new Set(["programming_guidance", "code_refactor", "source_editing", "code_review"]);
+const codingSkills = new Set(["code-refactor-skill", "ponytail"]);
+
 function inferPlannedReads(skillName: string): string[] {
   return knownSkillPlans[skillName]?.plannedReads ?? [];
 }
 
 function inferPlannedWrites(skillName: string): string[] {
   return knownSkillPlans[skillName]?.plannedWrites ?? [];
+}
+
+function isCodingPlan(skillName: string, capabilities: string[], plannedWrites: string[]): boolean {
+  return (
+    codingSkills.has(skillName) ||
+    capabilities.some((capability) => codingCapabilities.has(capability)) ||
+    plannedWrites.some((path) => path.startsWith("src/") || path === "src/**")
+  );
 }
 
 export function createDryRunExecutionPlan(params: CreateDryRunExecutionPlanParams): DryRunExecutionPlan {
@@ -42,6 +67,7 @@ export function createDryRunExecutionPlan(params: CreateDryRunExecutionPlanParam
   const unknownSkill = !Object.prototype.hasOwnProperty.call(knownSkillPlans, skillName);
   const plannedReads = params.plannedReads ? [...params.plannedReads] : inferPlannedReads(skillName);
   const plannedWrites = params.plannedWrites ? [...params.plannedWrites] : inferPlannedWrites(skillName);
+  const guidance = isCodingPlan(skillName, capabilities, plannedWrites) ? [ponytailCodingGuidance] : [];
   const risk = assessDryRunRisk({
     permissions,
     unknownSkill,
@@ -53,6 +79,7 @@ export function createDryRunExecutionPlan(params: CreateDryRunExecutionPlanParam
     skill: skillName,
     capabilities,
     permissions,
+    guidance,
     plannedReads,
     plannedWrites,
     networkAccess: permissions.some((permission) => permission.startsWith("network:")),

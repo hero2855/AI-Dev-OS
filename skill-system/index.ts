@@ -57,6 +57,7 @@ export { createDryRunExecutionPlan, assessDryRunRisk } from "./execution-plan";
 export type {
   CreateDryRunExecutionPlanParams,
   DryRunExecutionPlan,
+  DryRunGuidance,
   DryRunRiskAssessment,
   DryRunRiskLevel,
   DryRunSkillMetadata,

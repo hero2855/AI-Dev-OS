@@ -1,11 +1,19 @@
 export type DryRunRiskLevel = "low" | "medium" | "high" | "blocked";
 
+export type DryRunGuidance = {
+  source: string;
+  appliesTo: "coding";
+  advisoryOnly: boolean;
+  instructions: string[];
+};
+
 export type DryRunExecutionPlan = {
   mode: "dry-run";
   goal: string;
   skill: string;
   capabilities: string[];
   permissions: string[];
+  guidance: DryRunGuidance[];
   plannedReads: string[];
   plannedWrites: string[];
   networkAccess: boolean;
