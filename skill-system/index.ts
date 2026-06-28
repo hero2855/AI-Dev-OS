@@ -26,6 +26,12 @@ export {
   loadGitHubSkillManifest,
   loadGitHubSkillManifestIndex,
 } from "./github/manifestLoader";
+export type {
+  LoadGitHubSkillManifestIndexOptions,
+  SkillManifestLock,
+  SkillManifestLockEntry,
+  SkillManifestTextFetcher,
+} from "./github/manifestLoader";
 export { assertSha256Integrity, sha256Text, verifySha256Integrity } from "./github/integrity";
 export { TRUSTED_GITHUB_SKILL_REPOS, isTrustedRepo } from "./github/trustedRepos";
 export { validateSkillPolicy } from "./policy/policy";
@@ -86,12 +92,17 @@ export {
   runProjectHealthCheck,
 } from "../project-health";
 export type { ProjectHealthCheckResult, ProjectHealthStatus, ProjectRuntime } from "../project-health";
-export { createSafeDevelopmentWorkflow, shouldBlockWorkflow } from "../development-workflow";
+export { createSafeDevelopmentWorkflow, createWorkflowApprovalRecord, shouldBlockWorkflow } from "../development-workflow";
 export type {
+  CreateSafeDevelopmentWorkflowOptions,
+  CreateWorkflowApprovalRecordInput,
   DevelopmentWorkflowGuardInput,
   DevelopmentWorkflowGuardResult,
   DevelopmentWorkflowResult,
   DevelopmentWorkflowStage,
   DevelopmentWorkflowStatus,
+  WorkflowApprovalDecision,
+  WorkflowApprovalRecord,
+  WorkflowApprovalStatus,
 } from "../development-workflow";
 export { mockGitHubSkills, selectMockGitHubSkill };

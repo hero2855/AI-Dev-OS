@@ -2,8 +2,9 @@ import { createDryRunExecutionPlan } from "../skill-system/execution-plan";
 import type { CreateDryRunExecutionPlanParams } from "../skill-system/execution-plan";
 import { runProjectHealthCheck } from "../project-health";
 import { getWorkspaceProjectById, selectProjectForGoal } from "../workspace";
+import { createWorkflowApprovalRecord } from "./approval";
 import { shouldBlockWorkflow } from "./guards";
-import type { DevelopmentWorkflowResult } from "./types";
+import type { CreateSafeDevelopmentWorkflowOptions, DevelopmentWorkflowResult } from "./types";
 
 type WorkflowSkillMetadata = CreateDryRunExecutionPlanParams["skill"];
 
@@ -52,13 +53,30 @@ function baseRecommendedNextSteps(): string[] {
   ];
 }
 
-export function createSafeDevelopmentWorkflow(goal: string): DevelopmentWorkflowResult {
+export function createSafeDevelopmentWorkflow(
+  goal: string,
+  options: CreateSafeDevelopmentWorkflowOptions = {},
+): DevelopmentWorkflowResult {
   const projectSelection = selectProjectForGoal(goal);
   const selectedProject = projectSelection.selectedProject
     ? getWorkspaceProjectById(projectSelection.selectedProject.id)
     : undefined;
 
   if (!selectedProject) {
+    const approvalRecord = createWorkflowApprovalRecord({
+      goal,
+      riskLevel: projectSelection.riskLevel,
+      requiresApproval: true,
+      plannedReads: [],
+      plannedWrites: [],
+      permissions: [],
+      capabilities: [],
+      blockedReasons: [],
+      requestedBy: options.requestedBy,
+      requestedAt: options.requestedAt,
+      decision: options.approvalDecision,
+    });
+
     return {
       goal,
       status: "needs-clarification",
@@ -71,6 +89,7 @@ export function createSafeDevelopmentWorkflow(goal: string): DevelopmentWorkflow
       warnings: [projectSelection.reason],
       recommendedNextSteps: ["Clarify which project should be modified."],
       safetySummary,
+      approvalRecord,
     };
   }
 
@@ -99,6 +118,45 @@ export function createSafeDevelopmentWorkflow(goal: string): DevelopmentWorkflow
     recommendedNextSteps.push("Approve dry-run plan before sandbox execution.");
   }
 
+  const initiallyRequiresApproval = guard.requiresApproval || dryRunPlan.requiresApproval || projectSelection.requiresClarification;
+  const rejectedReasons = options.approvalDecision?.status === "rejected" ? ["Workflow approval rejected"] : [];
+  const effectiveBlockedReasons = [...guard.blockedReasons, ...rejectedReasons];
+  const approvalRecord = createWorkflowApprovalRecord({
+    goal,
+    project: selectedProject,
+    riskLevel: projectSelection.riskLevel,
+    requiresApproval: initiallyRequiresApproval,
+    plannedReads: dryRunPlan.plannedReads,
+    plannedWrites: dryRunPlan.plannedWrites,
+    permissions: dryRunPlan.permissions,
+    capabilities: dryRunPlan.capabilities,
+    blockedReasons: effectiveBlockedReasons,
+    requestedBy: options.requestedBy,
+    requestedAt: options.requestedAt,
+    decision: options.approvalDecision,
+  });
+
+  if (approvalRecord.status === "rejected") {
+    return {
+      goal,
+      status: "blocked",
+      currentStage: "blocked",
+      selectedProjectId: selectedProject.id,
+      selectedProjectName: selectedProject.name,
+      projectRiskLevel: projectSelection.riskLevel,
+      projectHealthStatus: healthCheck.status,
+      dryRunSummary: dryRunPlan.summary,
+      plannedReads: dryRunPlan.plannedReads,
+      plannedWrites: dryRunPlan.plannedWrites,
+      requiresApproval: true,
+      blockedReasons: approvalRecord.blockedReasons,
+      warnings,
+      recommendedNextSteps,
+      safetySummary,
+      approvalRecord,
+    };
+  }
+
   if (guard.blocked) {
     return {
       goal,
@@ -116,10 +174,11 @@ export function createSafeDevelopmentWorkflow(goal: string): DevelopmentWorkflow
       warnings,
       recommendedNextSteps,
       safetySummary,
+      approvalRecord,
     };
   }
 
-  if (projectSelection.requiresClarification) {
+  if (projectSelection.requiresClarification && approvalRecord.status !== "approved") {
     return {
       goal,
       status: "needs-clarification",
@@ -136,10 +195,11 @@ export function createSafeDevelopmentWorkflow(goal: string): DevelopmentWorkflow
       warnings,
       recommendedNextSteps,
       safetySummary,
+      approvalRecord,
     };
   }
 
-  if (guard.requiresApproval || dryRunPlan.requiresApproval) {
+  if ((guard.requiresApproval || dryRunPlan.requiresApproval) && approvalRecord.status !== "approved") {
     return {
       goal,
       status: "needs-approval",
@@ -156,6 +216,7 @@ export function createSafeDevelopmentWorkflow(goal: string): DevelopmentWorkflow
       warnings,
       recommendedNextSteps,
       safetySummary,
+      approvalRecord,
     };
   }
 
@@ -175,5 +236,6 @@ export function createSafeDevelopmentWorkflow(goal: string): DevelopmentWorkflow
     warnings,
     recommendedNextSteps,
     safetySummary,
+    approvalRecord,
   };
 }

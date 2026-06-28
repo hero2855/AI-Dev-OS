@@ -74,6 +74,13 @@ async function fetchText(url: string, label: string): Promise<string> {
   return response.text();
 }
 
+export type SkillManifestTextFetcher = (url: string, label: string) => Promise<string>;
+
+export type LoadGitHubSkillManifestIndexOptions = {
+  fetchText?: SkillManifestTextFetcher;
+  lock?: SkillManifestLock;
+};
+
 function parseJson(text: string, label: string): unknown {
   try {
     return JSON.parse(text);
@@ -157,12 +164,16 @@ export async function loadGitHubSkillManifest(repoUrl: string): Promise<GitHubSk
   return firstManifest;
 }
 
-export async function loadGitHubSkillManifestIndex(repoUrl: string): Promise<GitHubSkillManifest[]> {
+export async function loadGitHubSkillManifestIndex(
+  repoUrl: string,
+  options: LoadGitHubSkillManifestIndexOptions = {},
+): Promise<GitHubSkillManifest[]> {
   if (!isTrustedRepo(repoUrl)) {
     throw new Error("Untrusted GitHub skill repo");
   }
 
-  const lock = loadSkillManifestLock();
+  const lock = options.lock || loadSkillManifestLock();
+  const textFetcher = options.fetchText || fetchText;
 
   if (normalizeRepoUrl(repoUrl) !== normalizeRepoUrl(lock.trustedRepo)) {
     throw new Error("Trusted repo does not match skill manifest lock");
@@ -170,7 +181,7 @@ export async function loadGitHubSkillManifestIndex(repoUrl: string): Promise<Git
 
   const rawBaseUrl = getRawBaseUrl(repoUrl);
   const indexUrl = joinRawUrl(rawBaseUrl, lock.index.path);
-  const indexText = await fetchText(indexUrl, "GitHub skill manifest index");
+  const indexText = await textFetcher(indexUrl, "GitHub skill manifest index");
 
   assertSha256Integrity(indexText, lock.index.sha256, lock.index.path);
 
@@ -186,7 +197,7 @@ export async function loadGitHubSkillManifestIndex(repoUrl: string): Promise<Git
   for (const manifestPath of manifestPaths) {
     const lockedSkill = getLockedSkill(lock, manifestPath);
     const manifestUrl = joinRawUrl(rawBaseUrl, manifestPath);
-    const manifestText = await fetchText(manifestUrl, `GitHub skill manifest ${manifestPath}`);
+    const manifestText = await textFetcher(manifestUrl, `GitHub skill manifest ${manifestPath}`);
 
     assertSha256Integrity(manifestText, lockedSkill.sha256, manifestPath);
 

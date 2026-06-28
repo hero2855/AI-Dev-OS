@@ -5,6 +5,7 @@ import {
   assertManifestMatchesLock,
   assertSha256Integrity,
   createSafeDevelopmentWorkflow,
+  createWorkflowApprovalRecord,
   createDryRunExecutionPlan,
   createDefaultSandboxConfig,
   executeSkill,
@@ -19,9 +20,10 @@ import {
   runProjectHealthCheck,
   selectProjectForGoal,
   shouldBlockWorkflow,
+  sha256Text,
   validateSkillPolicy,
 } from "../skill-system";
-import type { GitHubSkillManifest, ProjectHealthCheckResult, WorkspaceProject } from "../skill-system";
+import type { GitHubSkillManifest, ProjectHealthCheckResult, SkillManifestLock, WorkspaceProject } from "../skill-system";
 
 type TestStatus = "PASS" | "FAIL";
 
@@ -133,10 +135,88 @@ function assertHealthShape(result: ProjectHealthCheckResult): void {
 
 async function getTrustedManifests(): Promise<GitHubSkillManifest[]> {
   if (!cachedManifests) {
-    cachedManifests = await loadGitHubSkillManifestIndex(trustedRepo);
+    const fixture = createOfflineManifestFixture();
+    cachedManifests = await loadGitHubSkillManifestIndex(trustedRepo, {
+      lock: fixture.lock,
+      fetchText: async (url: string) => {
+        const path = Object.keys(fixture.textByPath).find((item) => url.endsWith(item));
+
+        if (!path) {
+          throw new Error(`Unexpected offline manifest fetch path: ${url}`);
+        }
+
+        return fixture.textByPath[path];
+      },
+    });
   }
 
   return cachedManifests;
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+function createOfflineManifestFixture(): { lock: SkillManifestLock; textByPath: Record<string, string> } {
+  const manifestValues: GitHubSkillManifest[] = [
+    {
+      name: "github-search-skill",
+      version: "0.1.0",
+      description: "Offline mock skill for searching GitHub repository metadata.",
+      entry: "index.ts",
+      capabilities: ["github_search", "repo_discovery"],
+      permissions: ["network:github"],
+    },
+    {
+      name: "auto-readme-generator",
+      version: "0.1.0",
+      description: "Offline mock skill for README and documentation generation.",
+      entry: "index.ts",
+      capabilities: ["readme_generation", "docs_generation"],
+      permissions: ["file:read", "file:write:docs"],
+    },
+    {
+      name: "code-refactor-skill",
+      version: "0.1.0",
+      description: "Offline mock skill for source code refactoring.",
+      entry: "index.ts",
+      capabilities: ["code_refactor", "source_editing"],
+      permissions: ["file:read", "file:write:src"],
+    },
+  ];
+  const paths = [
+    "skills/github-search/skill.json",
+    "skills/readme-generator/skill.json",
+    "skills/code-refactor/skill.json",
+  ];
+  const indexPath = "skills/index.json";
+  const indexText = stableJson({
+    skills: paths.map((path) => ({ path })),
+  });
+  const textByPath: Record<string, string> = {
+    [indexPath]: indexText,
+  };
+
+  for (let index = 0; index < manifestValues.length; index += 1) {
+    textByPath[paths[index]] = stableJson(manifestValues[index]);
+  }
+
+  return {
+    lock: {
+      trustedRepo,
+      index: {
+        path: indexPath,
+        sha256: sha256Text(indexText),
+      },
+      skills: manifestValues.map((manifest, index) => ({
+        name: manifest.name,
+        version: manifest.version,
+        path: paths[index],
+        sha256: sha256Text(textByPath[paths[index]]),
+      })),
+    },
+    textByPath,
+  };
 }
 
 async function testWorkspaceProjectListContainsThreeProjects(): Promise<string> {
@@ -666,6 +746,136 @@ async function testWorkflowAiDevOsSandboxGoal(): Promise<string> {
   return `selectedProject=${result.selectedProjectId}, status=${result.status}`;
 }
 
+async function testApprovalRequiredNoDecisionPending(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("为一个 Next.js 产品优化首页文案", {
+    requestedBy: "test-runner",
+    requestedAt: "2026-06-28T00:00:00.000Z",
+  });
+
+  assert(result.approvalRecord.status === "pending", `Expected pending approval, got ${result.approvalRecord.status}`);
+  assert(result.approvalRecord.requiresApproval === true, "Approval record should require approval");
+  assert(result.status === "needs-approval", `Expected workflow needs-approval, got ${result.status}`);
+
+  return result.approvalRecord.approvalId;
+}
+
+async function testApprovalRequiredApprovedDecision(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("为一个 Next.js 产品优化首页文案", {
+    requestedBy: "test-runner",
+    requestedAt: "2026-06-28T00:00:00.000Z",
+    approvalDecision: {
+      status: "approved",
+      decidedBy: "owner",
+      decidedAt: "2026-06-28T00:01:00.000Z",
+    },
+  });
+
+  assert(result.approvalRecord.status === "approved", `Expected approved approval, got ${result.approvalRecord.status}`);
+  assert(result.approvalRecord.approvedBy === "owner", `Unexpected approver: ${result.approvalRecord.approvedBy}`);
+  assert(result.approvalRecord.decidedAt === "2026-06-28T00:01:00.000Z", "Approved decision timestamp was not recorded");
+  assert(result.status === "ready", `Approved non-blocked workflow should be ready, got ${result.status}`);
+
+  return result.approvalRecord.approvalSummary;
+}
+
+async function testApprovalRequiredRejectedDecision(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("为一个 Next.js 产品优化首页文案", {
+    requestedBy: "test-runner",
+    requestedAt: "2026-06-28T00:00:00.000Z",
+    approvalDecision: {
+      status: "rejected",
+      decidedBy: "owner",
+      decidedAt: "2026-06-28T00:01:00.000Z",
+    },
+  });
+
+  assert(result.approvalRecord.status === "rejected", `Expected rejected approval, got ${result.approvalRecord.status}`);
+  assert(result.status === "blocked", `Rejected workflow should be blocked, got ${result.status}`);
+  assert(result.blockedReasons.includes("Workflow approval rejected"), `Missing rejection reason: ${result.blockedReasons.join(", ")}`);
+
+  return result.approvalRecord.approvalSummary;
+}
+
+async function testApprovalRecordBlockedByPolicy(): Promise<string> {
+  const project = getWorkspaceProjectById("project-001-resume-ai");
+  assert(project, "Missing project-001-resume-ai");
+  const record = createWorkflowApprovalRecord({
+    goal: "attempt unsafe env write",
+    project,
+    riskLevel: "high",
+    requiresApproval: true,
+    plannedReads: ["package.json"],
+    plannedWrites: [".env"],
+    permissions: ["file:read", "file:write:src"],
+    capabilities: ["source_editing"],
+    blockedReasons: ["Workflow cannot write sensitive env files"],
+    requestedBy: "test-runner",
+    requestedAt: "2026-06-28T00:00:00.000Z",
+  });
+
+  assert(record.status === "blocked", `Expected blocked approval record, got ${record.status}`);
+  assert(
+    record.blockedReasons.includes("Workflow cannot write sensitive env files"),
+    `Missing blocked reason: ${record.blockedReasons.join(", ")}`,
+  );
+
+  return record.approvalSummary;
+}
+
+async function testApprovalNotRequiredRecord(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("search product documentation", {
+    requestedBy: "test-runner",
+    requestedAt: "2026-06-28T00:00:00.000Z",
+  });
+
+  assert(result.approvalRecord.status === "not_required", `Expected not_required, got ${result.approvalRecord.status}`);
+  assert(result.approvalRecord.requiresApproval === false, "Approval record should not require approval");
+  assert(result.status === "ready", `No-approval workflow should be ready, got ${result.status}`);
+
+  return result.approvalRecord.approvalSummary;
+}
+
+async function testApprovalRecordIncludesPlanDetails(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("重构某个产品项目的 src 代码", {
+    requestedBy: "test-runner",
+    requestedAt: "2026-06-28T00:00:00.000Z",
+  });
+  const record = result.approvalRecord;
+
+  assert(record.riskLevel === result.projectRiskLevel, `Unexpected risk level: ${record.riskLevel}`);
+  assert(record.approvedPlannedReads.includes("src/**"), `Missing planned read: ${record.approvedPlannedReads.join(", ")}`);
+  assert(record.approvedPlannedWrites.includes("src/**"), `Missing planned write: ${record.approvedPlannedWrites.join(", ")}`);
+  assert(record.approvedPermissions.includes("file:write:src"), `Missing permission: ${record.approvedPermissions.join(", ")}`);
+  assert(record.approvedCapabilities.includes("source_editing"), `Missing capability: ${record.approvedCapabilities.join(", ")}`);
+  assert(Array.isArray(record.blockedReasons), "Approval record blockedReasons should be an array");
+
+  return `permissions=${record.approvedPermissions.join(", ")}`;
+}
+
+async function testApprovalRecordDeterministicId(): Promise<string> {
+  const options = {
+    requestedBy: "test-runner",
+    requestedAt: "2026-06-28T00:00:00.000Z",
+  };
+  const first = createSafeDevelopmentWorkflow("为一个 Next.js 产品优化首页文案", options);
+  const second = createSafeDevelopmentWorkflow("为一个 Next.js 产品优化首页文案", options);
+
+  assert(first.approvalRecord.approvalId === second.approvalRecord.approvalId, "Approval id should be deterministic");
+
+  return first.approvalRecord.approvalId;
+}
+
+async function testWorkflowResultHasNoResumeOnlyApprovalFields(): Promise<string> {
+  const result = createSafeDevelopmentWorkflow("为一个 Next.js 产品优化首页文案");
+  const keys = Object.keys(result).join(" ").toLowerCase();
+  const approvalKeys = Object.keys(result.approvalRecord).join(" ").toLowerCase();
+
+  assert(!keys.includes("resume"), `Workflow result has Resume-only key: ${keys}`);
+  assert(!approvalKeys.includes("resume"), `Approval record has Resume-only key: ${approvalKeys}`);
+
+  return "Workflow and approval record fields are generic";
+}
+
 async function testLegalPermissionsPass(): Promise<string> {
   validateSkillPolicy(createPolicyTestManifest());
   return "Known permissions satisfy declared capabilities";
@@ -1043,12 +1253,12 @@ async function testSandboxExecutorDoesNotExecuteBrowser(): Promise<string> {
 
 async function testTrustedRepoFetchesIndexWithIntegrity(): Promise<string> {
   const manifests = await getTrustedManifests();
-  const lock = getSkillManifestLock();
+  const fixture = createOfflineManifestFixture();
 
   assert(manifests.length > 0, "Trusted repo index returned no manifests");
-  assert(lock.index.path === "skills/index.json", `Unexpected locked index path: ${lock.index.path}`);
+  assert(fixture.lock.index.path === "skills/index.json", `Unexpected locked index path: ${fixture.lock.index.path}`);
 
-  return `Fetched index and verified sha256 ${lock.index.sha256}`;
+  return `Verified offline index with sha256 ${fixture.lock.index.sha256}`;
 }
 
 async function testTrustedRepoFetchesSkillManifestsWithIntegrity(): Promise<string> {
@@ -1199,6 +1409,14 @@ async function main(): Promise<void> {
   console.log("AI Dev OS V4.4.6 Verification");
   console.log("");
 
+  await runTest("Workflow Approval Record pending when approval required without decision", testApprovalRequiredNoDecisionPending);
+  await runTest("Workflow Approval Record approved with explicit approval decision", testApprovalRequiredApprovedDecision);
+  await runTest("Workflow Approval Record rejected blocks workflow", testApprovalRequiredRejectedDecision);
+  await runTest("Workflow Approval Record blocked for policy-blocked workflow", testApprovalRecordBlockedByPolicy);
+  await runTest("Workflow Approval Record not_required when approval is not required", testApprovalNotRequiredRecord);
+  await runTest("Workflow Approval Record includes plan details", testApprovalRecordIncludesPlanDetails);
+  await runTest("Workflow Approval Record uses deterministic approval id", testApprovalRecordDeterministicId);
+  await runTest("Workflow Approval Record keeps generic result fields", testWorkflowResultHasNoResumeOnlyApprovalFields);
   await runTest("Safe Development Workflow selects Resume AI sample goal", testWorkflowSelectsResumeAiSampleGoal);
   await runTest("Safe Development Workflow generates workflow result", testWorkflowGeneratesResumeAiSampleResult);
   await runTest("Safe Development Workflow does not select AI Dev OS for Resume AI sample", testWorkflowResumeAiDoesNotSelectCore);

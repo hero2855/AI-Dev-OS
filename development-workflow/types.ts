@@ -9,6 +9,40 @@ export type DevelopmentWorkflowStage =
 
 export type DevelopmentWorkflowStatus = "ready" | "needs-approval" | "needs-clarification" | "blocked";
 
+export type WorkflowApprovalStatus = "pending" | "approved" | "rejected" | "not_required" | "blocked";
+
+export type WorkflowApprovalDecision = {
+  status: "approved" | "rejected";
+  decidedBy?: string;
+  decidedAt?: string;
+};
+
+export type WorkflowApprovalRecord = {
+  approvalId: string;
+  status: WorkflowApprovalStatus;
+  approvedBy?: string;
+  requestedBy?: string;
+  requestedAt: string;
+  decidedAt?: string;
+  goal: string;
+  projectId?: string;
+  projectType?: string;
+  riskLevel?: string;
+  requiresApproval: boolean;
+  approvedPlannedReads: string[];
+  approvedPlannedWrites: string[];
+  approvedPermissions: string[];
+  approvedCapabilities: string[];
+  blockedReasons: string[];
+  approvalSummary: string;
+};
+
+export type CreateSafeDevelopmentWorkflowOptions = {
+  approvalDecision?: WorkflowApprovalDecision;
+  requestedBy?: string;
+  requestedAt?: string;
+};
+
 export type DevelopmentWorkflowResult = {
   goal: string;
   status: DevelopmentWorkflowStatus;
@@ -25,4 +59,5 @@ export type DevelopmentWorkflowResult = {
   warnings: string[];
   recommendedNextSteps: string[];
   safetySummary: string;
+  approvalRecord: WorkflowApprovalRecord;
 };
