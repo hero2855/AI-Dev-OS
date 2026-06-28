@@ -15,10 +15,16 @@ import {
   executeSandboxOperation,
   getSkill,
   getSkillManifestLock,
+  getPinnedPonytailManifestTexts,
   createWorkspaceManager,
   getWorkspaceProjectById,
   loadGitHubSkillManifestIndex,
+  loadPinnedPonytailSkillManifestIndex,
+  listSkills,
   listWorkspaceProjects,
+  PONYTAIL_MANIFEST_PATH,
+  PONYTAIL_MANIFEST_SHA256,
+  PONYTAIL_SKILL_MANIFEST,
   registerGitHubSkillsFromManifestIndex,
   runProjectHealthCheck,
   runGitHubSkillV1Request,
@@ -228,12 +234,7 @@ function createOfflineManifestFixture(): { lock: SkillManifestLock; textByPath: 
 
 function createPonytailManifest(overrides: Partial<GitHubSkillManifest> = {}): GitHubSkillManifest {
   return {
-    name: "ponytail",
-    version: "4.8.3",
-    description: "Metadata-only Ponytail programming skill evaluation fixture.",
-    entry: "skills/ponytail/SKILL.md",
-    capabilities: ["code_refactor", "source_editing"],
-    permissions: ["file:read", "file:write:src"],
+    ...PONYTAIL_SKILL_MANIFEST,
     ...overrides,
   };
 }
@@ -1139,6 +1140,96 @@ async function testPonytailInvalidPermissionsBlocked(): Promise<string> {
   );
 
   return "Ponytail invalid permissions blocked";
+}
+
+async function testPinnedPonytailManifestLoadsOffline(): Promise<string> {
+  const manifests = loadPinnedPonytailSkillManifestIndex(ponytailRepo);
+  const [manifest] = manifests;
+  const texts = getPinnedPonytailManifestTexts();
+
+  assert(manifests.length === 1, `Expected one pinned Ponytail manifest, got ${manifests.length}`);
+  assert(manifest.name === "ponytail", `Unexpected pinned manifest name: ${manifest.name}`);
+  assert(manifest.version === "4.8.3", `Unexpected pinned manifest version: ${manifest.version}`);
+  assert(texts[PONYTAIL_MANIFEST_PATH] === stableJson(PONYTAIL_SKILL_MANIFEST), "Pinned manifest text should be stable JSON");
+  assertSha256Integrity(texts[PONYTAIL_MANIFEST_PATH], PONYTAIL_MANIFEST_SHA256, PONYTAIL_MANIFEST_PATH);
+  validateSkillPolicy(manifest);
+
+  return "Pinned Ponytail manifest loaded offline with sha256 integrity";
+}
+
+async function testPonytailRegistryDiscoversPinnedSkill(): Promise<string> {
+  const skill = getSkill("ponytail");
+  const skillNames = listSkills().map((item) => item.name);
+
+  assert(skill?.name === "ponytail", "Registry should discover pinned Ponytail skill");
+  assert(skillNames.includes("ponytail"), "listSkills should include pinned Ponytail skill");
+  assert(skill.description.includes("Metadata-only Ponytail programming skill"), `Unexpected description: ${skill.description}`);
+
+  return "Ponytail skill discovered through registry";
+}
+
+async function testPonytailPinnedCapabilitiesRecognized(): Promise<string> {
+  const [manifest] = loadPinnedPonytailSkillManifestIndex(ponytailRepo);
+
+  assert(manifest.capabilities.includes("programming_guidance"), "Ponytail should expose programming_guidance capability");
+  assert(manifest.capabilities.includes("code_refactor"), "Ponytail should expose code_refactor capability");
+  assert(manifest.capabilities.includes("source_editing"), "Ponytail should expose source_editing capability");
+  assert(manifest.capabilities.includes("code_review"), "Ponytail should expose code_review capability");
+  validateSkillPolicy(manifest);
+
+  return `Pinned Ponytail capabilities recognized: ${manifest.capabilities.join(", ")}`;
+}
+
+async function testPonytailRegistryExecutionAdvisoryOnly(): Promise<string> {
+  const output = await executeSkill("ponytail", "review this diff for over-engineering");
+  const message = String(output?.message || "");
+
+  assert(output?.type === "github_skill_manifest_placeholder", `Unexpected Ponytail output type: ${JSON.stringify(output)}`);
+  assert(output?.skill === "ponytail", `Unexpected Ponytail skill output: ${JSON.stringify(output)}`);
+  assert(message.includes("metadata-only advisory/planned use"), `Output should be advisory only: ${JSON.stringify(output)}`);
+  assert(message.includes("Remote execution, install scripts, and hooks are disabled"), `Output should block execution surfaces: ${JSON.stringify(output)}`);
+
+  return "Ponytail execution returns advisory/planned placeholder only";
+}
+
+async function testPonytailBadIntegrityBlocked(): Promise<string> {
+  const texts = getPinnedPonytailManifestTexts();
+
+  try {
+    assertSha256Integrity(texts[PONYTAIL_MANIFEST_PATH], "0".repeat(64), PONYTAIL_MANIFEST_PATH);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    assert(message.includes("Integrity check failed"), `Unexpected integrity failure: ${message}`);
+    return "Ponytail bad integrity blocked";
+  }
+
+  throw new Error("Ponytail bad integrity did not fail");
+}
+
+async function testPonytailHookExecutionBlocked(): Promise<string> {
+  const result = runGitHubSkillV1Request({
+    repoUrl: ponytailRepo,
+    manifestPath: ".ai-dev-os/skills/ponytail-hook/skill.json",
+    manifest: createPonytailManifest({
+      name: "ponytail-hook",
+      entry: "hooks/claude-codex-hooks.json",
+      capabilities: ["shell_execute"],
+      permissions: ["shell:execute"],
+    }),
+    mode: "mock",
+    action: {
+      type: "github:read",
+      description: "Attempt Ponytail hook execution.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected Ponytail hook execution blocked, got ${result.status}`);
+  assert(
+    result.blockedReasons.includes("Permission shell:execute is disabled in V4.4.4"),
+    `Missing hook execution block reason: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Ponytail hook execution remains blocked";
 }
 
 async function testHealthCheckAiDevOs(): Promise<string> {
@@ -2218,7 +2309,7 @@ async function testManifestSkillExecutionPlaceholder(): Promise<string> {
 
   assert(output?.type === "github_skill_manifest_placeholder", "Unexpected manifest skill output type");
   assert(
-    message.includes("remote execution is disabled in V4.4.4"),
+    message.includes("metadata-only advisory/planned use"),
     `Output did not clearly disable remote execution: ${JSON.stringify(output)}`,
   );
 
@@ -2467,6 +2558,12 @@ async function main(): Promise<void> {
   await runTest("Ponytail install/script execution remains blocked", testPonytailInstallAndScriptExecutionBlocked);
   await runTest("Untrusted Ponytail-like repo blocked", testUntrustedPonytailLikeRepoBlocked);
   await runTest("Ponytail invalid permissions blocked", testPonytailInvalidPermissionsBlocked);
+  await runTest("Pinned Ponytail manifest loads offline", testPinnedPonytailManifestLoadsOffline);
+  await runTest("Ponytail registry discovers pinned skill", testPonytailRegistryDiscoversPinnedSkill);
+  await runTest("Ponytail pinned capabilities recognized", testPonytailPinnedCapabilitiesRecognized);
+  await runTest("Ponytail registry execution is advisory only", testPonytailRegistryExecutionAdvisoryOnly);
+  await runTest("Ponytail bad integrity is blocked", testPonytailBadIntegrityBlocked);
+  await runTest("Ponytail hook execution remains blocked", testPonytailHookExecutionBlocked);
   await runTest("Sandbox can write safe.txt inside rootDir", testSandboxWritesSafeFile);
   await runTest("Sandbox can read safe.txt inside rootDir", testSandboxReadsSafeFile);
   await runTest("Sandbox can list rootDir", testSandboxListsRootDir);

@@ -5,6 +5,8 @@ const capabilityPermissionMap: Record<string, SkillPermission[]> = {
   repo_discovery: ["network:github"],
   readme_generation: ["file:read", "file:write:docs"],
   docs_generation: ["file:read", "file:write:docs"],
+  programming_guidance: ["file:read"],
+  code_review: ["file:read"],
   code_refactor: ["file:read", "file:write:src"],
   source_editing: ["file:read", "file:write:src"],
   browser_read: ["browser:read"],

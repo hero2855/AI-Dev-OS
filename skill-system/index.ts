@@ -1,10 +1,13 @@
-import { registerSkill } from "./registry";
+import { registerGitHubSkillsFromManifestIndex, registerSkill } from "./registry";
 import { defaultSkills } from "./skills";
 import { mockGitHubSkills, selectMockGitHubSkill } from "./github/mockRegistry";
+import { loadPinnedPonytailSkillManifestIndex } from "./github/pinnedPonytailManifest";
 
 for (const skill of [...defaultSkills, ...mockGitHubSkills]) {
   registerSkill(skill);
 }
+
+registerGitHubSkillsFromManifestIndex(loadPinnedPonytailSkillManifestIndex());
 
 export type { Skill, SkillName } from "./types";
 export type { GitHubSkill } from "./github/types";
@@ -26,6 +29,18 @@ export {
   loadGitHubSkillManifest,
   loadGitHubSkillManifestIndex,
 } from "./github/manifestLoader";
+export {
+  PONYTAIL_MANIFEST_INDEX_PATH,
+  PONYTAIL_MANIFEST_INDEX_SHA256,
+  PONYTAIL_MANIFEST_PATH,
+  PONYTAIL_MANIFEST_SHA256,
+  PONYTAIL_REPO_URL,
+  PONYTAIL_SKILL_MANIFEST,
+  getPinnedPonytailManifestLock,
+  getPinnedPonytailManifestTexts,
+  loadPinnedPonytailSkillManifest,
+  loadPinnedPonytailSkillManifestIndex,
+} from "./github/pinnedPonytailManifest";
 export type {
   LoadGitHubSkillManifestIndexOptions,
   SkillManifestLock,
