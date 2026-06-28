@@ -9,6 +9,7 @@
     "verify:v44": "tsx tests/verify-v44.ts"
   },
   "devDependencies": {
+    "@types/node": "^26.0.1",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   }
