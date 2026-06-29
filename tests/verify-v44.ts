@@ -35,6 +35,7 @@ import {
   createReplyMonitorPlan,
   createContentFollowUpPlan,
   createUnattendedWorkflowRunnerPlan,
+  createSchedulerBridgePlan,
   decideAutopilotApprovalPolicy,
   runSkillRuntimeRequest,
   selectProjectForGoal,
@@ -2550,6 +2551,200 @@ async function testUnattendedRunnerNoRealOperationsOccur(): Promise<string> {
   return "Unattended runner performed no real timer/scheduler/network/browser/computer/shell/publish/reply/comment-read operation";
 }
 
+async function testSchedulerBridgeDeterministicPlan(): Promise<string> {
+  const input = {
+    schedulerType: "windows_task_scheduler",
+    triggerTime: "2026-07-22T08:00:00.000Z",
+    recurrence: {
+      type: "recurring" as const,
+      startsAt: "2026-07-22T08:00:00.000Z",
+      timezone: "Asia/Shanghai",
+      interval: "daily" as const,
+    },
+    targetWorkflow: {
+      workflowName: "unattended-content-loop",
+      goal: "Plan external scheduler bridge.",
+      plannedOnly: true as const,
+    },
+  };
+  const first = createSchedulerBridgePlan(input);
+  const second = createSchedulerBridgePlan(input);
+
+  assert(first.planId === second.planId, "Scheduler bridge plan id should be deterministic");
+  assert(first.schedulerType === "windows_task_scheduler", `Unexpected scheduler type: ${first.schedulerType}`);
+  assert(first.triggerTime === "2026-07-22T08:00:00.000Z", `Unexpected trigger time: ${first.triggerTime}`);
+  assert(first.recurrence.type === "recurring", "Bridge should preserve recurrence");
+  assert(first.requiredApprovals.includes("external_scheduler_bridge"), "Windows Task Scheduler bridge should require external scheduler approval");
+  assert(first.riskLevel === "medium", `Expected medium risk, got ${first.riskLevel}`);
+  assert(first.requiresApproval === true, "External scheduler bridge should require approval");
+  assert(first.blockedReasons.length === 0, `Supported bridge should not be blocked: ${first.blockedReasons.join(", ")}`);
+  assert(first.plannedOnly === true, "Scheduler bridge should be planned only");
+
+  return `Deterministic scheduler bridge plan id: ${first.planId}`;
+}
+
+async function testSchedulerBridgeResultIncludesRequiredShape(): Promise<string> {
+  const result = createSchedulerBridgePlan({
+    schedulerType: "manual",
+    triggerTime: "2026-07-23T10:00:00.000Z",
+    recurrence: {
+      type: "one-time",
+      runAt: "2026-07-23T10:00:00.000Z",
+    },
+    targetWorkflow: {
+      workflowName: "manual-dry-run",
+      goal: "Plan manual dry-run trigger.",
+      plannedOnly: true,
+    },
+  });
+
+  assert(typeof result.schedulerType === "string", "Result should include schedulerType");
+  assert(typeof result.triggerTime === "string", "Result should include triggerTime");
+  assert(result.recurrence.type === "one-time", "Result should include recurrence");
+  assert(result.targetWorkflow.plannedOnly === true, "Result should include planned-only targetWorkflow");
+  assert(typeof result.dryRunCommand === "string" && result.dryRunCommand.length > 0, "Result should include dryRunCommand");
+  assert(Array.isArray(result.requiredApprovals), "Result should include requiredApprovals");
+  assert(Array.isArray(result.environmentRequirements) && result.environmentRequirements.length > 0, "Result should include environmentRequirements");
+  assert(Array.isArray(result.safetyNotes) && result.safetyNotes.length > 0, "Result should include safetyNotes");
+  assert(typeof result.riskLevel === "string", "Result should include riskLevel");
+  assert(typeof result.requiresApproval === "boolean", "Result should include requiresApproval");
+  assert(Array.isArray(result.blockedReasons), "Result should include blockedReasons");
+  assert(typeof result.summary === "string" && result.summary.length > 0, "Result should include summary");
+  assert(result.approvalPolicyDecision.plannedOnly === true, "Result should include approval policy metadata");
+
+  return "Scheduler bridge result includes schedulerType, triggerTime, recurrence, targetWorkflow, dryRunCommand, approvals, environment, safety, risk, approval, blocked reasons, and summary";
+}
+
+async function testSchedulerBridgeUnsupportedSchedulerBlocked(): Promise<string> {
+  const result = createSchedulerBridgePlan({
+    schedulerType: "unsupported_scheduler",
+    triggerTime: "2026-07-24T10:00:00.000Z",
+    recurrence: {
+      type: "one-time",
+      runAt: "2026-07-24T10:00:00.000Z",
+    },
+    targetWorkflow: {
+      workflowName: "unsupported-bridge",
+      goal: "Plan unsupported scheduler bridge.",
+      plannedOnly: true,
+    },
+  });
+
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === true, "Unsupported scheduler should require approval/blocking");
+  assert(
+    result.blockedReasons.includes("Unsupported scheduler type: unsupported_scheduler"),
+    `Missing unsupported scheduler reason: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(result.auditSummary.realSchedulerOperation === false, "Unsupported bridge must not create scheduler");
+
+  return "Unsupported scheduler bridge type is blocked";
+}
+
+async function testSchedulerBridgeRealTaskCreationBlocked(): Promise<string> {
+  const result = createSchedulerBridgePlan({
+    schedulerType: "local_runner",
+    triggerTime: "2026-07-25T10:00:00.000Z",
+    recurrence: {
+      type: "one-time",
+      runAt: "2026-07-25T10:00:00.000Z",
+    },
+    targetWorkflow: {
+      workflowName: "real-task-request",
+      goal: "Plan local runner bridge.",
+      plannedOnly: true,
+    },
+    createRealTask: true,
+    runWorkflowNow: true,
+    safetyNotes: ["Create a real scheduled task and run the workflow now."],
+  });
+
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === true, "Real task/workflow requests should require approval/blocking");
+  assert(result.requiredApprovals.includes("real_task_creation_blocked"), "Real task creation should be approval-gated/blocked");
+  assert(result.requiredApprovals.includes("workflow_execution_blocked"), "Workflow execution should be approval-gated/blocked");
+  assert(
+    result.blockedReasons.some((reason) => reason.toLowerCase().includes("scheduler task creation")),
+    `Blocked reasons should mention scheduler task creation: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(
+    result.blockedReasons.some((reason) => reason.toLowerCase().includes("workflow execution")),
+    `Blocked reasons should mention workflow execution: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Real scheduler task creation and workflow execution are blocked/planned-only";
+}
+
+async function testSchedulerBridgeIntegratesWithUnattendedRunner(): Promise<string> {
+  const runnerPlan = createUnattendedWorkflowRunnerPlan({
+    platform: "generic_web_platform",
+    goal: "Plan unattended runner with scheduler bridge metadata.",
+    schedule: {
+      type: "recurring",
+      startsAt: "2026-07-26T09:00:00.000Z",
+      interval: "weekly",
+    },
+    schedulerBridge: {
+      schedulerType: "github_actions_private_runner",
+      dryRunCommand: "pnpm scheduler-bridge:dry-run",
+    },
+  });
+  const scheduledTrigger = runnerPlan.stages.find((stage) => stage.type === "scheduled_trigger");
+
+  assert(runnerPlan.schedulerBridgePlan.schedulerType === "github_actions_private_runner", "Runner should include selected scheduler bridge type");
+  assert(runnerPlan.schedulerBridgePlan.targetWorkflow.unattendedRunnerPlan?.planId === runnerPlan.planId, "Bridge target should reference unattended runner plan id");
+  assert(runnerPlan.schedulerBridgePlan.targetWorkflow.scheduledWorkflowPlan?.workflowId === runnerPlan.scheduledWorkflowPlan.workflowId, "Bridge target should reference scheduled workflow id");
+  assert(runnerPlan.schedulerBridgePlan.requiredApprovals.includes("external_scheduler_bridge"), "Private runner bridge should require external scheduler approval");
+  assert(scheduledTrigger?.modules.some((module) => module.module === "scheduler-bridge"), "Scheduled trigger stage should include scheduler bridge module");
+  assert(scheduledTrigger?.approvalPolicyDecision.plannedOnly === true, "Scheduled trigger should keep autopilot approval metadata");
+
+  return "Scheduler bridge integrates with unattended runner and autopilot metadata as planned-only workflow metadata";
+}
+
+async function testSchedulerBridgeNoRealOperationsOccur(): Promise<string> {
+  const before = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(before.status === 0, `git status before scheduler bridge failed: ${before.stderr}`);
+
+  const result = createSchedulerBridgePlan({
+    schedulerType: "n8n",
+    triggerTime: "2026-07-27T10:00:00.000Z",
+    recurrence: {
+      type: "recurring",
+      startsAt: "2026-07-27T10:00:00.000Z",
+      interval: "cron",
+      cron: "0 10 * * 1",
+    },
+    targetWorkflow: {
+      workflowName: "n8n-dry-run",
+      goal: "Plan n8n bridge only.",
+      plannedOnly: true,
+    },
+  });
+
+  const after = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(after.status === 0, `git status after scheduler bridge failed: ${after.stderr}`);
+  assert(after.stdout === before.stdout, `Scheduler bridge changed git status:\nBefore:\n${before.stdout}\nAfter:\n${after.stdout}`);
+  assert(result.auditSummary.realTimerOperation === false, "Bridge must not create timers");
+  assert(result.auditSummary.realSchedulerOperation === false, "Bridge must not create scheduler tasks");
+  assert(result.auditSummary.realWorkflowExecution === false, "Bridge must not run workflows");
+  assert(result.auditSummary.realNetworkOperation === false, "Bridge must not perform network operations");
+  assert(result.auditSummary.realBrowserOperation === false, "Bridge must not perform browser operations");
+  assert(result.auditSummary.realComputerOperation === false, "Bridge must not perform computer operations");
+  assert(result.auditSummary.realShellOperation === false, "Bridge must not perform shell operations");
+  assert(result.auditSummary.realPublishOperation === false, "Bridge must not publish");
+  assert(result.auditSummary.realReplyOperation === false, "Bridge must not reply");
+
+  return "Scheduler bridge performed no real timer/scheduler/workflow/network/browser/computer/shell/publish/reply operation";
+}
+
 async function testAutopilotApprovalLowRiskContentPlanningAutoAllowed(): Promise<string> {
   const result = decideAutopilotApprovalPolicy({
     action: "content:create",
@@ -4449,6 +4644,12 @@ async function main(): Promise<void> {
   await runTest("Unattended Workflow Runner Plan v1 integrates with scheduled content create", testUnattendedRunnerIntegratesWithScheduledWorkflowMetadata);
   await runTest("Unattended Workflow Runner Plan v1 unsafe actions are blocked", testUnattendedRunnerUnsafeActionsBlocked);
   await runTest("Unattended Workflow Runner Plan v1 performs no real scheduler/browser/computer/publish/reply action", testUnattendedRunnerNoRealOperationsOccur);
+  await runTest("Scheduler Bridge Plan v1 creates deterministic bridge plans", testSchedulerBridgeDeterministicPlan);
+  await runTest("Scheduler Bridge Plan v1 result includes required shape", testSchedulerBridgeResultIncludesRequiredShape);
+  await runTest("Scheduler Bridge Plan v1 unsupported scheduler type is blocked", testSchedulerBridgeUnsupportedSchedulerBlocked);
+  await runTest("Scheduler Bridge Plan v1 real task creation and workflow execution are blocked", testSchedulerBridgeRealTaskCreationBlocked);
+  await runTest("Scheduler Bridge Plan v1 integrates with unattended runner workflows", testSchedulerBridgeIntegratesWithUnattendedRunner);
+  await runTest("Scheduler Bridge Plan v1 performs no real scheduler/browser/computer/publish/reply action", testSchedulerBridgeNoRealOperationsOccur);
   await runTest("Autopilot Approval Policy v1 auto-allows low-risk content planning", testAutopilotApprovalLowRiskContentPlanningAutoAllowed);
   await runTest("Autopilot Approval Policy v1 gates publish/reply/write actions", testAutopilotApprovalPublishReplyAndWritesRequireApproval);
   await runTest("Autopilot Approval Policy v1 blocks dangerous actions", testAutopilotApprovalDangerousActionsBlocked);

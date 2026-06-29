@@ -6,6 +6,7 @@ import type { ReplyMonitorPlanResult } from "../reply-monitor";
 import type { ScheduledWorkflowPlanResult, ScheduledWorkflowSchedule } from "../scheduled-workflow";
 import type { ContentFollowUpPlanResult } from "../content-follow-up";
 import type { AutopilotApprovalPolicyResult } from "../autopilot-approval";
+import type { SchedulerBridgePlanResult, SchedulerBridgeType } from "../scheduler-bridge";
 
 export type UnattendedRunnerPlatform =
   | "xiaohongshu"
@@ -22,6 +23,7 @@ export type UnattendedRunnerStageType =
   | "next_cycle_plan";
 
 export type UnattendedRunnerStageModule =
+  | "scheduler-bridge"
   | "scheduled-workflow"
   | "platform-publisher"
   | "reply-monitor"
@@ -43,6 +45,15 @@ export type UnattendedRunnerPlanRequest = {
   };
   signals?: ContentFollowUpSignalInput[];
   notes?: string[];
+  schedulerBridge?: {
+    schedulerType: SchedulerBridgeType | string;
+    triggerTime?: string;
+    dryRunCommand?: string;
+    createRealTask?: boolean;
+    runWorkflowNow?: boolean;
+    environmentRequirements?: string[];
+    safetyNotes?: string[];
+  };
 };
 
 export type UnattendedRunnerPlannedModule = {
@@ -77,6 +88,7 @@ export type UnattendedRunnerPlanResult = {
   goal: string;
   schedule: ScheduledWorkflowSchedule;
   stages: UnattendedRunnerStagePlan[];
+  schedulerBridgePlan: SchedulerBridgePlanResult;
   scheduledWorkflowPlan: ScheduledWorkflowPlanResult;
   platformPublisherPlan: PlatformPublisherPlanResult;
   replyMonitorPlan: ReplyMonitorPlanResult;

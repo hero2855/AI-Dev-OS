@@ -3,6 +3,7 @@ import type { DryRunRiskLevel } from "../skill-system/execution-plan";
 import { createContentFollowUpPlan } from "../content-follow-up";
 import { createPlatformPublisherPlan } from "../platform-publisher";
 import { createReplyMonitorPlan } from "../reply-monitor";
+import { createSchedulerBridgePlan } from "../scheduler-bridge";
 import { createScheduledWorkflowPlan } from "../scheduled-workflow";
 import { decideAutopilotApprovalPolicy } from "../autopilot-approval";
 import type { AutopilotApprovalPolicyRequest } from "../autopilot-approval";
@@ -87,6 +88,7 @@ const riskRank: Record<DryRunRiskLevel, number> = {
 export function createUnattendedWorkflowRunnerPlan(
   request: UnattendedRunnerPlanRequest,
 ): UnattendedRunnerPlanResult {
+  const planId = createDeterministicPlanId(request);
   const platformPublisherPlan = createPlatformPublisherPlan({
     platform: request.platform,
     goal: `Plan platform publishing for unattended workflow: ${request.goal}`,
@@ -143,9 +145,34 @@ export function createUnattendedWorkflowRunnerPlan(
       },
     ],
   });
+  const schedulerBridgePlan = createSchedulerBridgePlan({
+    schedulerType: request.schedulerBridge?.schedulerType ?? "manual",
+    triggerTime: request.schedulerBridge?.triggerTime ?? getScheduleTriggerTime(scheduledWorkflowPlan.schedule),
+    recurrence: scheduledWorkflowPlan.schedule,
+    targetWorkflow: {
+      workflowName: scheduledWorkflowPlan.workflowName,
+      goal: request.goal,
+      plannedOnly: true,
+      scheduledWorkflowPlan: {
+        workflowId: scheduledWorkflowPlan.workflowId,
+        workflowName: scheduledWorkflowPlan.workflowName,
+        plannedOnly: true,
+      },
+      unattendedRunnerPlan: {
+        planId,
+        platform: request.platform,
+        plannedOnly: true,
+      },
+    },
+    dryRunCommand: request.schedulerBridge?.dryRunCommand,
+    createRealTask: request.schedulerBridge?.createRealTask,
+    runWorkflowNow: request.schedulerBridge?.runWorkflowNow,
+    environmentRequirements: request.schedulerBridge?.environmentRequirements,
+    safetyNotes: request.schedulerBridge?.safetyNotes,
+  });
   const requestBlockedReasons = collectRequestBlockedReasons(request);
   const stages = [
-    createScheduledTriggerStage(scheduledWorkflowPlan, requestBlockedReasons),
+    createScheduledTriggerStage(scheduledWorkflowPlan, schedulerBridgePlan, requestBlockedReasons),
     createContentCreationStage(contentFollowUpPlan, requestBlockedReasons),
     createPlatformPublishStage(platformPublisherPlan, requestBlockedReasons),
     createReplyMonitorStage(replyMonitorPlan, requestBlockedReasons),
@@ -167,11 +194,12 @@ export function createUnattendedWorkflowRunnerPlan(
   const requiresApproval = blockedReasons.length > 0 || stages.some((stage) => stage.requiresApproval);
 
   return {
-    planId: createDeterministicPlanId(request),
+    planId,
     platform: request.platform,
     goal: request.goal,
     schedule: scheduledWorkflowPlan.schedule,
     stages,
+    schedulerBridgePlan,
     scheduledWorkflowPlan,
     platformPublisherPlan,
     replyMonitorPlan,
@@ -190,19 +218,30 @@ export function createUnattendedWorkflowRunnerPlan(
 
 function createScheduledTriggerStage(
   scheduledWorkflowPlan: ReturnType<typeof createScheduledWorkflowPlan>,
+  schedulerBridgePlan: ReturnType<typeof createSchedulerBridgePlan>,
   requestBlockedReasons: string[],
 ): UnattendedRunnerStagePlan {
   return createStage({
     id: "runner-stage-1",
     type: "scheduled_trigger",
     description: "Represent the scheduled trigger as planned-only workflow metadata.",
-    riskLevel: scheduledWorkflowPlan.riskLevel,
-    requiresApproval: scheduledWorkflowPlan.requiresApproval,
-    blockedReasons: [...requestBlockedReasons, ...scheduledWorkflowPlan.blockedReasons],
-    approvalsNeeded: scheduledWorkflowPlan.requiresApproval ? ["scheduled_trigger"] : [],
+    riskLevel: maxRisk(scheduledWorkflowPlan.riskLevel, schedulerBridgePlan.riskLevel),
+    requiresApproval: scheduledWorkflowPlan.requiresApproval || schedulerBridgePlan.requiresApproval,
+    blockedReasons: [...requestBlockedReasons, ...scheduledWorkflowPlan.blockedReasons, ...schedulerBridgePlan.blockedReasons],
+    approvalsNeeded: mergeUnique(
+      scheduledWorkflowPlan.requiresApproval ? ["scheduled_trigger"] : [],
+      schedulerBridgePlan.requiredApprovals,
+    ),
     permissions: ["content:schedule:preview"],
-    capabilities: ["content_schedule"],
+    capabilities: ["content_schedule", "scheduler_bridge"],
     modules: [
+      {
+        module: "scheduler-bridge",
+        planId: schedulerBridgePlan.planId,
+        plannedOnly: true,
+        requiresApproval: schedulerBridgePlan.requiresApproval,
+        riskLevel: schedulerBridgePlan.riskLevel,
+      },
       {
         module: "scheduled-workflow",
         planId: scheduledWorkflowPlan.workflowId,
@@ -499,6 +538,7 @@ function stringifyRequestForSafety(request: UnattendedRunnerPlanRequest): string
     notes: request.notes,
     post: request.post,
     signals: request.signals,
+    schedulerBridge: request.schedulerBridge,
   };
 
   try {
@@ -506,6 +546,10 @@ function stringifyRequestForSafety(request: UnattendedRunnerPlanRequest): string
   } catch {
     return `${request.goal} ${(request.notes ?? []).join(" ")}`;
   }
+}
+
+function getScheduleTriggerTime(schedule: ReturnType<typeof createScheduledWorkflowPlan>["schedule"]): string {
+  return schedule.type === "one-time" ? schedule.runAt : schedule.startsAt;
 }
 
 function createAuditSummary(): UnattendedRunnerPlanResult["auditSummary"] {

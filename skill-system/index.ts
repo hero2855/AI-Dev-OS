@@ -224,6 +224,13 @@ export type {
   UnattendedRunnerStagePlan,
   UnattendedRunnerStageType,
 } from "../unattended-runner";
+export { createSchedulerBridgePlan } from "../scheduler-bridge";
+export type {
+  SchedulerBridgePlanRequest,
+  SchedulerBridgePlanResult,
+  SchedulerBridgeTargetWorkflow,
+  SchedulerBridgeType,
+} from "../scheduler-bridge";
 export { decideAutopilotApprovalPolicy } from "../autopilot-approval";
 export type {
   AutopilotApprovalActionCategory,
