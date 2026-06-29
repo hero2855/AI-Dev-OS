@@ -36,6 +36,7 @@ import {
   createContentFollowUpPlan,
   createUnattendedWorkflowRunnerPlan,
   createSchedulerBridgePlan,
+  createControlledEndToEndDemo,
   decideAutopilotApprovalPolicy,
   runSkillRuntimeRequest,
   selectProjectForGoal,
@@ -2745,6 +2746,125 @@ async function testSchedulerBridgeNoRealOperationsOccur(): Promise<string> {
   return "Scheduler bridge performed no real timer/scheduler/workflow/network/browser/computer/shell/publish/reply operation";
 }
 
+async function testControlledDemoDeterministicPlan(): Promise<string> {
+  const input = {
+    platform: "xiaohongshu",
+    contentNiche: "AI resume optimization / Resume-AI",
+    mode: "mock" as const,
+  };
+  const first = createControlledEndToEndDemo(input);
+  const second = createControlledEndToEndDemo(input);
+
+  assert(first.demoId === second.demoId, "Controlled demo id should be deterministic");
+  assert(first.title === second.title, "Controlled demo title should be deterministic");
+  assert(first.targetPlatform === "xiaohongshu", `Unexpected target platform: ${first.targetPlatform}`);
+  assert(first.contentNiche === "AI resume optimization / Resume-AI", `Unexpected niche: ${first.contentNiche}`);
+  assert(first.stages.length === 9, `Expected 9 demo stages, got ${first.stages.length}`);
+  assert(first.stages.every((stage) => stage.plannedOnly === true), "All demo stages should be planned only");
+  assert(first.plannedOnly === true, "Demo result should be planned only");
+  assert(first.riskLevel === "high", `Expected high risk from publish planning, got ${first.riskLevel}`);
+  assert(first.requiresApproval === true, "Controlled end-to-end demo should require approval for publish/scheduler/reply stages");
+  assert(first.blockedReasons.length === 0, `Supported controlled demo should not be blocked: ${first.blockedReasons.join(", ")}`);
+
+  return `Deterministic controlled demo id: ${first.demoId}`;
+}
+
+async function testControlledDemoResultIncludesRequiredShape(): Promise<string> {
+  const result = createControlledEndToEndDemo();
+
+  assert(typeof result.title === "string" && result.title.length > 0, "Demo should include content title");
+  assert(typeof result.contentAngle === "string" && result.contentAngle.includes("Resume-AI"), "Demo should include content angle");
+  assert(Array.isArray(result.bodyOutline) && result.bodyOutline.length > 0, "Demo should include body outline");
+  assert(typeof result.shortPostBody === "string" && result.shortPostBody.length > 0, "Demo should include short post body");
+  assert(Array.isArray(result.tags) && result.tags.length > 0, "Demo should include tags");
+  assert(result.targetPlatform === "xiaohongshu", "Demo should target Xiaohongshu by default");
+  assert(typeof result.suggestedPublishTime === "string" && result.suggestedPublishTime.length > 0, "Demo should include suggested publish time");
+  assert(result.publishPlan.plannedOnly === true, "Demo should include planned publish plan");
+  assert(result.schedulerPlan.plannedOnly === true, "Demo should include planned scheduler bridge plan");
+  assert(result.replyMonitorPlan.plannedOnly === true, "Demo should include planned reply monitor plan");
+  assert(result.followUpContentPlan.plannedOnly === true, "Demo should include planned follow-up content plan");
+  assert(result.unattendedRunnerPlan.plannedOnly === true, "Demo should include planned unattended runner plan");
+  assert(Array.isArray(result.approvalPolicyDecisions) && result.approvalPolicyDecisions.length >= 5, "Demo should include approval policy decisions");
+  assert(typeof result.riskSummary === "string" && result.riskSummary.length > 0, "Demo should include risk summary");
+  assert(Array.isArray(result.blockedRealActions) && result.blockedRealActions.includes("publish_or_post_live"), "Demo should list blocked real actions");
+  assert(typeof result.finalWorkflowSummary === "string" && result.finalWorkflowSummary.includes("controlled end-to-end demo"), "Demo should include final workflow summary");
+
+  return "Controlled demo result includes title, angle, body, tags, platform, publish time, module plans, approvals, risk, blocked actions, and final summary";
+}
+
+async function testControlledDemoIntegratesPlanningModules(): Promise<string> {
+  const result = createControlledEndToEndDemo({
+    platform: "xiaohongshu",
+    schedulerType: "local_runner",
+  });
+  const stageNames = result.stages.map((stage) => stage.name).join(",");
+
+  assert(result.scheduledWorkflowPlan.workflowId.length > 0, "Demo should include scheduled workflow plan");
+  assert(result.publishPlan.planId.length > 0, "Demo should include platform publisher plan");
+  assert(result.schedulerPlan.planId.length > 0, "Demo should include scheduler bridge plan");
+  assert(result.replyMonitorPlan.planId.length > 0, "Demo should include reply monitor plan");
+  assert(result.followUpContentPlan.planId.length > 0, "Demo should include content follow-up plan");
+  assert(result.unattendedRunnerPlan.planId.length > 0, "Demo should include unattended runner plan");
+  assert(
+    stageNames === "content_idea,content_package,platform_publish_plan,scheduler_bridge_plan,reply_monitor_plan,follow_up_content_plan,unattended_runner_plan,autopilot_approval_decisions,final_demo_report",
+    `Unexpected stage order: ${stageNames}`,
+  );
+  assert(result.approvalPolicyDecisions.some((decision) => decision.action === "content:publish" && decision.requiresApproval === true), "Publish approval decision should require approval");
+  assert(result.approvalPolicyDecisions.some((decision) => decision.action === "content:schedule" && decision.requiresApproval === true), "Schedule approval decision should require approval");
+
+  return "Controlled demo integrates scheduled-workflow, platform-publisher, scheduler-bridge, reply-monitor, content-follow-up, unattended-runner, and autopilot approval";
+}
+
+async function testControlledDemoUnsupportedPlatformBlocked(): Promise<string> {
+  const result = createControlledEndToEndDemo({
+    platform: "unsupported_platform",
+  });
+
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === true, "Unsupported platform demo should require approval/blocking");
+  assert(
+    result.blockedReasons.some((reason) => reason.includes("Unsupported platform: unsupported_platform")),
+    `Missing unsupported platform reason: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(result.stages.some((stage) => stage.status === "blocked"), "Unsupported platform should block one or more demo stages");
+  assert(result.auditSummary.realPublishOperation === false, "Unsupported platform demo must not publish");
+
+  return "Controlled demo blocks unsupported platforms";
+}
+
+async function testControlledDemoNoRealOperationsOccur(): Promise<string> {
+  const before = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(before.status === 0, `git status before controlled demo failed: ${before.stderr}`);
+
+  const result = createControlledEndToEndDemo();
+
+  const after = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(after.status === 0, `git status after controlled demo failed: ${after.stderr}`);
+  assert(after.stdout === before.stdout, `Controlled demo changed git status:\nBefore:\n${before.stdout}\nAfter:\n${after.stdout}`);
+  assert(result.auditSummary.realTimerOperation === false, "Demo must not create timers");
+  assert(result.auditSummary.realSchedulerOperation === false, "Demo must not create scheduler tasks");
+  assert(result.auditSummary.realWorkflowExecution === false, "Demo must not run workflows");
+  assert(result.auditSummary.realNetworkOperation === false, "Demo must not perform network operations");
+  assert(result.auditSummary.realBrowserOperation === false, "Demo must not perform browser operations");
+  assert(result.auditSummary.realComputerOperation === false, "Demo must not perform computer operations");
+  assert(result.auditSummary.realShellOperation === false, "Demo must not perform shell operations");
+  assert(result.auditSummary.realPublishOperation === false, "Demo must not publish");
+  assert(result.auditSummary.realReplyOperation === false, "Demo must not reply");
+  assert(result.auditSummary.realCommentReadOperation === false, "Demo must not read real comments");
+  assert(result.auditSummary.productAppModified === false, "Demo must not modify product app");
+  assert(result.auditSummary.aiDevOsSkillsModified === false, "Demo must not modify AI-Dev-OS-skills");
+
+  return "Controlled demo performed no real scheduler/workflow/network/browser/computer/shell/publish/reply/comment-read/product-app/skills operation";
+}
+
 async function testAutopilotApprovalLowRiskContentPlanningAutoAllowed(): Promise<string> {
   const result = decideAutopilotApprovalPolicy({
     action: "content:create",
@@ -4650,6 +4770,11 @@ async function main(): Promise<void> {
   await runTest("Scheduler Bridge Plan v1 real task creation and workflow execution are blocked", testSchedulerBridgeRealTaskCreationBlocked);
   await runTest("Scheduler Bridge Plan v1 integrates with unattended runner workflows", testSchedulerBridgeIntegratesWithUnattendedRunner);
   await runTest("Scheduler Bridge Plan v1 performs no real scheduler/browser/computer/publish/reply action", testSchedulerBridgeNoRealOperationsOccur);
+  await runTest("V5.0 Controlled End-to-End Demo creates deterministic planned demos", testControlledDemoDeterministicPlan);
+  await runTest("V5.0 Controlled End-to-End Demo result includes required shape", testControlledDemoResultIncludesRequiredShape);
+  await runTest("V5.0 Controlled End-to-End Demo integrates planning modules", testControlledDemoIntegratesPlanningModules);
+  await runTest("V5.0 Controlled End-to-End Demo unsupported platform is blocked", testControlledDemoUnsupportedPlatformBlocked);
+  await runTest("V5.0 Controlled End-to-End Demo performs no real scheduler/browser/computer/publish/reply action", testControlledDemoNoRealOperationsOccur);
   await runTest("Autopilot Approval Policy v1 auto-allows low-risk content planning", testAutopilotApprovalLowRiskContentPlanningAutoAllowed);
   await runTest("Autopilot Approval Policy v1 gates publish/reply/write actions", testAutopilotApprovalPublishReplyAndWritesRequireApproval);
   await runTest("Autopilot Approval Policy v1 blocks dangerous actions", testAutopilotApprovalDangerousActionsBlocked);

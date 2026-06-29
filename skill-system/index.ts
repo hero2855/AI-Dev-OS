@@ -231,6 +231,16 @@ export type {
   SchedulerBridgeTargetWorkflow,
   SchedulerBridgeType,
 } from "../scheduler-bridge";
+export { createControlledEndToEndDemo } from "../controlled-demo";
+export type {
+  ControlledDemoContentIdea,
+  ControlledDemoStage,
+  ControlledDemoStageName,
+  ControlledEndToEndDemoMode,
+  ControlledEndToEndDemoPlatform,
+  ControlledEndToEndDemoRequest,
+  ControlledEndToEndDemoResult,
+} from "../controlled-demo";
 export { decideAutopilotApprovalPolicy } from "../autopilot-approval";
 export type {
   AutopilotApprovalActionCategory,
