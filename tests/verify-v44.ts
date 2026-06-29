@@ -30,6 +30,7 @@ import {
   runGitHubSkillV1Request,
   runBrowserSkillV1Request,
   runComputerSkillV1Request,
+  createScheduledWorkflowPlan,
   runSkillRuntimeRequest,
   selectProjectForGoal,
   shouldBlockWorkflow,
@@ -1355,6 +1356,242 @@ async function testComputerSkillV1NoRealOperationsOccur(): Promise<string> {
   assert(result.auditSummary.realPublishOperation === false, "Computer Use Skill v1 must not perform publish operations");
 
   return "Computer Use Skill v1 performed no real network/browser/computer/shell/publish operation";
+}
+
+async function testScheduledWorkflowDeterministicPlan(): Promise<string> {
+  const input = {
+    workflowName: "daily-content-draft",
+    goal: "Create a draft and inspect source material later.",
+    schedule: {
+      type: "one-time" as const,
+      runAt: "2026-07-01T09:00:00.000Z",
+      timezone: "UTC",
+    },
+    steps: [
+      {
+        id: "draft",
+        type: "content:create",
+        description: "Create a local draft.",
+      },
+      {
+        id: "research",
+        type: "browser:read",
+        description: "Read a mock/local source snapshot.",
+      },
+    ],
+  };
+  const first = createScheduledWorkflowPlan(input);
+  const second = createScheduledWorkflowPlan(input);
+
+  assert(first.workflowId === second.workflowId, "Scheduled workflow id should be deterministic");
+  assert(first.schedule.type === "one-time", `Expected one-time schedule, got ${first.schedule.type}`);
+  assert(first.steps.length === 2, `Expected 2 steps, got ${first.steps.length}`);
+  assert(first.riskLevel === "low", `Expected low risk, got ${first.riskLevel}`);
+  assert(first.requiresApproval === false, "Low-risk one-time plan should not require approval");
+  assert(first.auditSummary.realTimerOperation === false, "Scheduled workflow must not create a real timer");
+  assert(first.auditSummary.realSchedulerOperation === false, "Scheduled workflow must not create an OS scheduler task");
+
+  return `Deterministic scheduled workflow plan id: ${first.workflowId}`;
+}
+
+async function testScheduledWorkflowRecurringPlanRepresented(): Promise<string> {
+  const result = createScheduledWorkflowPlan({
+    workflowName: "weekly-reply-monitor",
+    goal: "Represent a recurring monitoring and follow-up workflow.",
+    schedule: {
+      type: "recurring",
+      startsAt: "2026-07-06T10:00:00.000Z",
+      timezone: "Asia/Shanghai",
+      interval: "weekly",
+      maxOccurrences: 4,
+    },
+    steps: [
+      {
+        id: "observe",
+        type: "computer:observe",
+        description: "Observe a mock/local inbox state.",
+      },
+      {
+        id: "follow-up",
+        type: "content:create",
+        description: "Create follow-up content draft.",
+      },
+    ],
+  });
+
+  assert(result.schedule.type === "recurring", `Expected recurring schedule, got ${result.schedule.type}`);
+  assert(result.schedule.type === "recurring" && result.schedule.interval === "weekly", "Recurring interval should be weekly");
+  assert(result.schedule.type === "recurring" && result.schedule.maxOccurrences === 4, "Recurring max occurrences should be represented");
+  assert(result.steps.every((step) => step.plannedOnly === true), "All recurring workflow steps should be planned only");
+  assert(result.auditSummary.realTimerOperation === false, "Recurring workflow must not create a real timer");
+  assert(result.auditSummary.realSchedulerOperation === false, "Recurring workflow must not create an OS scheduler task");
+
+  return "Recurring scheduled workflow metadata represented";
+}
+
+async function testScheduledWorkflowHighRiskStepsRequireApproval(): Promise<string> {
+  const result = createScheduledWorkflowPlan({
+    workflowName: "approval-gated-publishing-flow",
+    goal: "Plan future publish and reply workflow after approval.",
+    schedule: {
+      type: "one-time",
+      runAt: "2026-07-02T12:00:00.000Z",
+    },
+    steps: [
+      {
+        id: "browser-write",
+        type: "browser:write",
+        description: "Plan a future browser write without executing it.",
+      },
+      {
+        id: "computer-act",
+        type: "computer:act",
+        description: "Plan a future computer action without executing it.",
+      },
+      {
+        id: "publish",
+        type: "content:publish",
+        description: "Plan future content publishing only.",
+      },
+      {
+        id: "reply",
+        type: "content:reply",
+        description: "Plan future reply content only.",
+      },
+    ],
+  });
+
+  assert(result.requiresApproval === true, "High-risk scheduled workflow should require approval");
+  assert(result.riskLevel === "blocked", `Expected blocked aggregate risk, got ${result.riskLevel}`);
+  assert(result.steps.every((step) => step.requiresApproval === true), "High-risk steps should require approval");
+  assert(result.steps.every((step) => step.plannedOnly === true), "High-risk steps should remain planned only");
+  assert(result.steps.every((step) => step.status === "requires_approval"), `Unexpected step statuses: ${result.steps.map((step) => step.status).join(", ")}`);
+  assert(result.auditSummary.realPublishOperation === false, "Scheduled workflow must not publish");
+  assert(result.auditSummary.realBrowserOperation === false, "Scheduled workflow must not run browser actions");
+  assert(result.auditSummary.realComputerOperation === false, "Scheduled workflow must not run computer actions");
+
+  return "Scheduled workflow high-risk browser/computer/publish/reply steps require approval and remain planned only";
+}
+
+async function testScheduledWorkflowResultIncludesRequiredShape(): Promise<string> {
+  const result = createScheduledWorkflowPlan({
+    goal: "Inspect scheduled workflow result shape.",
+    schedule: {
+      type: "one-time",
+      runAt: "2026-07-03T08:30:00.000Z",
+    },
+    steps: [
+      {
+        type: "content:schedule",
+        description: "Prepare content schedule preview only.",
+      },
+    ],
+  });
+
+  assert(result.schedule.type === "one-time", "Result should include schedule");
+  assert(Array.isArray(result.steps) && result.steps.length === 1, "Result should include steps");
+  assert(typeof result.riskLevel === "string", "Result should include riskLevel");
+  assert(typeof result.requiresApproval === "boolean", "Result should include requiresApproval");
+  assert(Array.isArray(result.blockedReasons), "Result should include blockedReasons");
+  assert(typeof result.summary === "string" && result.summary.length > 0, "Result should include summary");
+  assert(result.steps[0].permissions.includes("content:schedule:preview"), "Step should include permissions");
+  assert(result.steps[0].capabilities.includes("content_schedule"), "Step should include capabilities");
+
+  return "Scheduled workflow result includes schedule, steps, risk, approval, blocked reasons, and summary";
+}
+
+async function testScheduledWorkflowUnsafeStepsBlockedOrApprovalGated(): Promise<string> {
+  const result = createScheduledWorkflowPlan({
+    workflowName: "unsafe-action-preview",
+    goal: "Attempt unsafe future actions.",
+    schedule: {
+      type: "one-time",
+      runAt: "2026-07-04T11:00:00.000Z",
+    },
+    steps: [
+      {
+        id: "unsafe-browser",
+        type: "browser:write",
+        description: "Plan to click, type, submit, upload, and login through a browser.",
+      },
+      {
+        id: "unsafe-computer",
+        type: "computer:act",
+        description: "Plan to pay, delete, and send messages from the computer.",
+      },
+      {
+        id: "unsupported",
+        type: "network:write",
+        description: "Attempt unsupported remote write.",
+      },
+    ],
+  });
+
+  assert(result.requiresApproval === true, "Unsafe workflow should require approval");
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.steps.every((step) => step.status === "blocked"), `Expected blocked steps, got ${result.steps.map((step) => step.status).join(", ")}`);
+  assert(
+    result.blockedReasons.some((reason) => reason.toLowerCase().includes("click")),
+    `Blocked reasons should mention click: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(
+    result.blockedReasons.some((reason) => reason.toLowerCase().includes("pay")),
+    `Blocked reasons should mention pay: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(
+    result.blockedReasons.some((reason) => reason.includes("Unsupported scheduled workflow step")),
+    `Blocked reasons should mention unsupported step: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Scheduled workflow unsafe steps are blocked or approval-gated";
+}
+
+async function testScheduledWorkflowNoRealOperationsOccur(): Promise<string> {
+  const before = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(before.status === 0, `git status before scheduled workflow failed: ${before.stderr}`);
+
+  const result = createScheduledWorkflowPlan({
+    workflowName: "no-op-scheduled-workflow",
+    goal: "Create a no-op scheduled workflow plan.",
+    schedule: {
+      type: "recurring",
+      startsAt: "2026-07-05T07:00:00.000Z",
+      interval: "daily",
+    },
+    steps: [
+      {
+        id: "draft",
+        type: "content:create",
+        description: "Create a draft plan only.",
+      },
+      {
+        id: "observe",
+        type: "computer:observe",
+        description: "Observe mock/local state only.",
+      },
+    ],
+  });
+
+  const after = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(after.status === 0, `git status after scheduled workflow failed: ${after.stderr}`);
+  assert(after.stdout === before.stdout, `Scheduled workflow changed git status:\nBefore:\n${before.stdout}\nAfter:\n${after.stdout}`);
+  assert(result.auditSummary.realTimerOperation === false, "Scheduled workflow must not create real timers");
+  assert(result.auditSummary.realSchedulerOperation === false, "Scheduled workflow must not create real OS scheduler tasks");
+  assert(result.auditSummary.realNetworkOperation === false, "Scheduled workflow must not perform network operations");
+  assert(result.auditSummary.realBrowserOperation === false, "Scheduled workflow must not perform browser operations");
+  assert(result.auditSummary.realComputerOperation === false, "Scheduled workflow must not perform computer operations");
+  assert(result.auditSummary.realShellOperation === false, "Scheduled workflow must not perform shell operations");
+  assert(result.auditSummary.realPublishOperation === false, "Scheduled workflow must not perform publish operations");
+
+  return "Scheduled workflow agent performed no real timer/scheduler/network/browser/computer/shell/publish operation";
 }
 
 async function testPonytailTrustedRepoAcceptedMetadataOnly(): Promise<string> {
@@ -3014,6 +3251,12 @@ async function main(): Promise<void> {
   await runTest("Computer Use Skill v1 result includes required action shape", testComputerSkillV1ResultIncludesRequiredShape);
   await runTest("Computer Use Skill v1 external runtime is blocked", testComputerSkillV1ExternalRuntimeBlocked);
   await runTest("Computer Use Skill v1 performs no real network/browser/computer/shell operation", testComputerSkillV1NoRealOperationsOccur);
+  await runTest("Scheduled Workflow Agent v1 creates deterministic one-time plans", testScheduledWorkflowDeterministicPlan);
+  await runTest("Scheduled Workflow Agent v1 represents recurring workflows", testScheduledWorkflowRecurringPlanRepresented);
+  await runTest("Scheduled Workflow Agent v1 high-risk steps require approval", testScheduledWorkflowHighRiskStepsRequireApproval);
+  await runTest("Scheduled Workflow Agent v1 result includes required shape", testScheduledWorkflowResultIncludesRequiredShape);
+  await runTest("Scheduled Workflow Agent v1 unsafe steps are blocked or approval-gated", testScheduledWorkflowUnsafeStepsBlockedOrApprovalGated);
+  await runTest("Scheduled Workflow Agent v1 performs no real timer/scheduler/browser/computer action", testScheduledWorkflowNoRealOperationsOccur);
   await runTest("Ponytail trusted repo accepted as metadata-only source", testPonytailTrustedRepoAcceptedMetadataOnly);
   await runTest("Ponytail coding skill capabilities recognized", testPonytailCodingSkillCapabilitiesRecognized);
   await runTest("Ponytail remote code execution remains blocked", testPonytailRemoteCodeExecutionBlocked);

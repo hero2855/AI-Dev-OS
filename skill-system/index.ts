@@ -176,3 +176,12 @@ export type {
   ComputerSkillV1Request,
   ComputerSkillV1Result,
 } from "../computer-skill";
+export { createScheduledWorkflowPlan } from "../scheduled-workflow";
+export type {
+  ScheduledWorkflowPlanRequest,
+  ScheduledWorkflowPlanResult,
+  ScheduledWorkflowSchedule,
+  ScheduledWorkflowStepInput,
+  ScheduledWorkflowStepPlan,
+  ScheduledWorkflowStepType,
+} from "../scheduled-workflow";
