@@ -181,6 +181,7 @@ function createStepPlan(step: ScheduledWorkflowStepInput, index: number): Schedu
     publisherPlan: step.type === "content:publish" ? step.publisherPlan : undefined,
     replyMonitorPlan: step.type === "content:reply" ? step.replyMonitorPlan : undefined,
     contentFollowUpPlan: step.type === "content:create" ? step.contentFollowUpPlan : undefined,
+    unattendedRunnerPlan: step.type === "content:create" ? step.unattendedRunnerPlan : undefined,
     summary: summarizeStep(step, status, blockedReasons),
   };
 }

@@ -214,3 +214,13 @@ export type {
   ContentFollowUpSignalCategory,
   ContentFollowUpSignalInput,
 } from "../content-follow-up";
+export { createUnattendedWorkflowRunnerPlan } from "../unattended-runner";
+export type {
+  UnattendedRunnerPlanRequest,
+  UnattendedRunnerPlanResult,
+  UnattendedRunnerPlannedModule,
+  UnattendedRunnerPlatform,
+  UnattendedRunnerStageModule,
+  UnattendedRunnerStagePlan,
+  UnattendedRunnerStageType,
+} from "../unattended-runner";

@@ -34,6 +34,7 @@ import {
   createPlatformPublisherPlan,
   createReplyMonitorPlan,
   createContentFollowUpPlan,
+  createUnattendedWorkflowRunnerPlan,
   runSkillRuntimeRequest,
   selectProjectForGoal,
   shouldBlockWorkflow,
@@ -2297,6 +2298,257 @@ async function testContentFollowUpNoRealOperationsOccur(): Promise<string> {
   return "Content follow-up performed no real network/browser/computer/shell/scheduler/publish/reply/comment-read operation";
 }
 
+async function testUnattendedRunnerDeterministicPlan(): Promise<string> {
+  const input = {
+    platform: "xiaohongshu",
+    goal: "Plan an unattended content workflow.",
+    workflowName: "unattended-content-loop",
+    schedule: {
+      type: "recurring" as const,
+      startsAt: "2026-07-13T09:00:00.000Z",
+      timezone: "Asia/Shanghai",
+      interval: "daily" as const,
+      maxOccurrences: 3,
+    },
+    post: {
+      title: "Planned launch note",
+      body: "Mock/local draft body.",
+      tags: ["ai-dev-os"],
+    },
+    signals: [
+      {
+        category: "questions",
+        summary: "Mock/local audience questions.",
+      },
+    ],
+  };
+  const first = createUnattendedWorkflowRunnerPlan(input);
+  const second = createUnattendedWorkflowRunnerPlan(input);
+
+  assert(first.planId === second.planId, "Unattended runner plan id should be deterministic");
+  assert(first.platform === "xiaohongshu", `Unexpected platform: ${first.platform}`);
+  assert(first.stages.length === 6, `Expected 6 runner stages, got ${first.stages.length}`);
+  assert(first.stages.map((stage) => stage.type).join(",") === "scheduled_trigger,content_creation_plan,platform_publish_plan,reply_monitor_plan,follow_up_content_plan,next_cycle_plan", "Runner stages should be in the required order");
+  assert(first.riskLevel === "high", `Expected high aggregate risk, got ${first.riskLevel}`);
+  assert(first.requiresApproval === true, "End-to-end unattended workflow should require approval for high-risk stages");
+  assert(first.blockedReasons.length === 0, `Supported runner plan should not be blocked: ${first.blockedReasons.join(", ")}`);
+  assert(first.stages.every((stage) => stage.plannedOnly === true), "All runner stages should be planned only");
+
+  return `Deterministic unattended runner plan id: ${first.planId}`;
+}
+
+async function testUnattendedRunnerOrchestratesPlanningModules(): Promise<string> {
+  const result = createUnattendedWorkflowRunnerPlan({
+    platform: "generic_web_platform",
+    goal: "Plan all modules for unattended content operations.",
+    schedule: {
+      type: "one-time",
+      runAt: "2026-07-14T10:00:00.000Z",
+    },
+  });
+  const modules = new Set<string>(result.stages.flatMap((stage) => stage.modules.map((module) => module.module)));
+
+  for (const module of ["scheduled-workflow", "platform-publisher", "reply-monitor", "content-follow-up", "browser-skill", "computer-skill"]) {
+    assert(modules.has(module), `Runner should include ${module}`);
+  }
+
+  assert(result.scheduledWorkflowPlan.workflowId.length > 0, "Runner should include scheduled workflow plan");
+  assert(result.platformPublisherPlan.planId.length > 0, "Runner should include platform publisher plan");
+  assert(result.replyMonitorPlan.planId.length > 0, "Runner should include reply monitor plan");
+  assert(result.contentFollowUpPlan.planId.length > 0, "Runner should include content follow-up plan");
+
+  return "Unattended runner orchestrates scheduled-workflow, platform-publisher, reply-monitor, content-follow-up, browser-skill, and computer-skill";
+}
+
+async function testUnattendedRunnerHighRiskStagesRequireApproval(): Promise<string> {
+  const result = createUnattendedWorkflowRunnerPlan({
+    platform: "douyin",
+    goal: "Plan approval-gated unattended workflow.",
+    schedule: {
+      type: "recurring",
+      startsAt: "2026-07-15T08:00:00.000Z",
+      interval: "weekly",
+    },
+    signals: [
+      {
+        category: "negative_feedback",
+        summary: "Mock/local comments mention trust concerns.",
+      },
+      {
+        category: "objections",
+        summary: "Mock/local comments raise buying objections.",
+      },
+    ],
+  });
+
+  assert(result.requiresApproval === true, "High-risk unattended runner should require approval");
+  assert(result.riskLevel === "high", `Expected high risk, got ${result.riskLevel}`);
+  assert(result.approvalsNeeded.includes("platform_publish_plan"), "Platform publish stage should need approval");
+  assert(result.approvalsNeeded.includes("reply_monitor_plan"), "Reply monitor stage should need approval");
+  assert(result.approvalsNeeded.includes("follow_up_content_plan"), "High-risk follow-up stage should need approval");
+  assert(result.stages.some((stage) => stage.type === "platform_publish_plan" && stage.status === "requires_approval"), "Publish stage should be approval-gated");
+  assert(result.stages.some((stage) => stage.type === "follow_up_content_plan" && stage.status === "requires_approval"), "Follow-up stage should be approval-gated");
+
+  return "Unattended runner high-risk publish/reply/follow-up stages require approval";
+}
+
+async function testUnattendedRunnerUnsupportedPlatformBlocked(): Promise<string> {
+  const result = createUnattendedWorkflowRunnerPlan({
+    platform: "unsupported_platform",
+    goal: "Plan unsupported unattended workflow.",
+    schedule: {
+      type: "one-time",
+      runAt: "2026-07-16T10:00:00.000Z",
+    },
+  });
+
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === true, "Unsupported platform should require approval/blocking");
+  assert(
+    result.blockedReasons.some((reason) => reason.includes("Unsupported platform: unsupported_platform")),
+    `Missing unsupported platform reason: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(result.stages.some((stage) => stage.status === "blocked"), "Unsupported platform should block one or more stages");
+  assert(result.plannedOnly === true, "Unsupported platform result should still be planned only");
+
+  return "Unsupported unattended runner platform blocked";
+}
+
+async function testUnattendedRunnerResultIncludesRequiredShape(): Promise<string> {
+  const result = createUnattendedWorkflowRunnerPlan({
+    platform: "wechat_public_account",
+    goal: "Inspect unattended runner result shape.",
+    schedule: {
+      type: "one-time",
+      runAt: "2026-07-17T09:30:00.000Z",
+    },
+  });
+
+  assert(Array.isArray(result.stages) && result.stages.length === 6, "Result should include stages");
+  assert(result.schedule.type === "one-time", "Result should include schedule");
+  assert(typeof result.riskLevel === "string", "Result should include riskLevel");
+  assert(typeof result.requiresApproval === "boolean", "Result should include requiresApproval");
+  assert(Array.isArray(result.blockedReasons), "Result should include blockedReasons");
+  assert(Array.isArray(result.approvalsNeeded), "Result should include approvalsNeeded");
+  assert(Array.isArray(result.permissions) && result.permissions.length > 0, "Result should include permissions");
+  assert(Array.isArray(result.capabilities) && result.capabilities.length > 0, "Result should include capabilities");
+  assert(typeof result.summary === "string" && result.summary.length > 0, "Result should include summary");
+  assert(result.stages.every((stage) => Array.isArray(stage.modules) && stage.modules.length > 0), "Each stage should include planned modules");
+
+  return "Unattended runner result includes stages, schedule, risk, approval, blocked reasons, approvals, permissions, capabilities, and summary";
+}
+
+async function testUnattendedRunnerIntegratesWithScheduledWorkflowMetadata(): Promise<string> {
+  const runnerPlan = createUnattendedWorkflowRunnerPlan({
+    platform: "generic_web_platform",
+    goal: "Plan unattended runner metadata handoff.",
+    schedule: {
+      type: "one-time",
+      runAt: "2026-07-18T10:00:00.000Z",
+    },
+  });
+  const workflow = createScheduledWorkflowPlan({
+    workflowName: "scheduled-unattended-runner",
+    goal: "Represent planned unattended runner as content creation metadata.",
+    schedule: {
+      type: "one-time",
+      runAt: "2026-07-18T10:00:00.000Z",
+    },
+    steps: [
+      {
+        id: "runner",
+        type: "content:create",
+        description: "Create planned unattended runner content locally.",
+        unattendedRunnerPlan: {
+          planId: runnerPlan.planId,
+          platform: runnerPlan.platform,
+          plannedOnly: true,
+        },
+      },
+    ],
+  });
+  const [runnerStep] = workflow.steps;
+
+  assert(runnerStep.type === "content:create", `Unexpected scheduled step type: ${runnerStep.type}`);
+  assert(runnerStep.unattendedRunnerPlan?.planId === runnerPlan.planId, "Scheduled workflow should carry unattended runner plan id");
+  assert(runnerStep.unattendedRunnerPlan?.platform === "generic_web_platform", "Scheduled workflow should carry unattended runner platform");
+  assert(runnerStep.unattendedRunnerPlan?.plannedOnly === true, "Unattended runner handoff should be planned only");
+  assert(workflow.auditSummary.realSchedulerOperation === false, "Scheduled workflow must not create scheduler");
+  assert(workflow.auditSummary.realPublishOperation === false, "Scheduled workflow must not publish");
+
+  return "Unattended runner integrates with scheduled content:create metadata as planned-only handoff";
+}
+
+async function testUnattendedRunnerUnsafeActionsBlocked(): Promise<string> {
+  const result = createUnattendedWorkflowRunnerPlan({
+    platform: "xiaohongshu",
+    goal: "Attempt unsafe unattended actions.",
+    schedule: {
+      type: "one-time",
+      runAt: "2026-07-19T10:00:00.000Z",
+    },
+    notes: [
+      "Open real browser, click, type, upload, submit, login, publish now, reply now, send now, pay, and delete.",
+    ],
+  });
+
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === true, "Unsafe runner should require approval/blocking");
+  assert(result.stages.every((stage) => stage.status === "blocked"), `Expected blocked stages, got ${result.stages.map((stage) => stage.status).join(", ")}`);
+  assert(
+    result.blockedReasons.some((reason) => reason.toLowerCase().includes("click")),
+    `Blocked reasons should mention click: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(
+    result.blockedReasons.some((reason) => reason.toLowerCase().includes("publish")),
+    `Blocked reasons should mention publish: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(
+    result.blockedReasons.some((reason) => reason.toLowerCase().includes("reply")),
+    `Blocked reasons should mention reply: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Unattended runner unsafe real execution actions are blocked";
+}
+
+async function testUnattendedRunnerNoRealOperationsOccur(): Promise<string> {
+  const before = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(before.status === 0, `git status before unattended runner failed: ${before.stderr}`);
+
+  const result = createUnattendedWorkflowRunnerPlan({
+    platform: "generic_web_platform",
+    goal: "Create no-op unattended runner plan.",
+    schedule: {
+      type: "recurring",
+      startsAt: "2026-07-20T07:00:00.000Z",
+      interval: "daily",
+    },
+  });
+
+  const after = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(after.status === 0, `git status after unattended runner failed: ${after.stderr}`);
+  assert(after.stdout === before.stdout, `Unattended runner changed git status:\nBefore:\n${before.stdout}\nAfter:\n${after.stdout}`);
+  assert(result.auditSummary.realTimerOperation === false, "Runner must not create timers");
+  assert(result.auditSummary.realSchedulerOperation === false, "Runner must not create scheduler tasks");
+  assert(result.auditSummary.realNetworkOperation === false, "Runner must not perform network operations");
+  assert(result.auditSummary.realBrowserOperation === false, "Runner must not perform browser operations");
+  assert(result.auditSummary.realComputerOperation === false, "Runner must not perform computer operations");
+  assert(result.auditSummary.realShellOperation === false, "Runner must not perform shell operations");
+  assert(result.auditSummary.realPublishOperation === false, "Runner must not publish");
+  assert(result.auditSummary.realReplyOperation === false, "Runner must not reply");
+  assert(result.auditSummary.realCommentReadOperation === false, "Runner must not read real comments");
+
+  return "Unattended runner performed no real timer/scheduler/network/browser/computer/shell/publish/reply/comment-read operation";
+}
+
 async function testPonytailTrustedRepoAcceptedMetadataOnly(): Promise<string> {
   const manifests = await loadPonytailFixtureManifests();
   const [manifest] = manifests;
@@ -3985,6 +4237,14 @@ async function main(): Promise<void> {
   await runTest("Content Follow-up Agent v1 integrates with scheduled content create", testContentFollowUpIntegratesWithScheduledWorkflow);
   await runTest("Content Follow-up Agent v1 unsafe signals are blocked", testContentFollowUpUnsafeSignalsBlocked);
   await runTest("Content Follow-up Agent v1 performs no real network/browser/computer/scheduler/publish/reply action", testContentFollowUpNoRealOperationsOccur);
+  await runTest("Unattended Workflow Runner Plan v1 creates deterministic end-to-end plans", testUnattendedRunnerDeterministicPlan);
+  await runTest("Unattended Workflow Runner Plan v1 orchestrates existing planning modules", testUnattendedRunnerOrchestratesPlanningModules);
+  await runTest("Unattended Workflow Runner Plan v1 high-risk stages require approval", testUnattendedRunnerHighRiskStagesRequireApproval);
+  await runTest("Unattended Workflow Runner Plan v1 unsupported platform is blocked", testUnattendedRunnerUnsupportedPlatformBlocked);
+  await runTest("Unattended Workflow Runner Plan v1 result includes required shape", testUnattendedRunnerResultIncludesRequiredShape);
+  await runTest("Unattended Workflow Runner Plan v1 integrates with scheduled content create", testUnattendedRunnerIntegratesWithScheduledWorkflowMetadata);
+  await runTest("Unattended Workflow Runner Plan v1 unsafe actions are blocked", testUnattendedRunnerUnsafeActionsBlocked);
+  await runTest("Unattended Workflow Runner Plan v1 performs no real scheduler/browser/computer/publish/reply action", testUnattendedRunnerNoRealOperationsOccur);
   await runTest("Ponytail trusted repo accepted as metadata-only source", testPonytailTrustedRepoAcceptedMetadataOnly);
   await runTest("Ponytail coding skill capabilities recognized", testPonytailCodingSkillCapabilitiesRecognized);
   await runTest("Ponytail remote code execution remains blocked", testPonytailRemoteCodeExecutionBlocked);
