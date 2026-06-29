@@ -179,6 +179,7 @@ function createStepPlan(step: ScheduledWorkflowStepInput, index: number): Schedu
     permissions: profile?.permissions ?? [],
     capabilities: profile?.capabilities ?? [],
     publisherPlan: step.type === "content:publish" ? step.publisherPlan : undefined,
+    replyMonitorPlan: step.type === "content:reply" ? step.replyMonitorPlan : undefined,
     summary: summarizeStep(step, status, blockedReasons),
   };
 }

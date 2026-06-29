@@ -194,3 +194,12 @@ export type {
   PlatformPublishStepInput,
   PlatformPublishStepType,
 } from "../platform-publisher";
+export { createReplyMonitorPlan } from "../reply-monitor";
+export type {
+  ReplyMonitorPlanRequest,
+  ReplyMonitorPlanResult,
+  ReplyMonitorPlatform,
+  ReplyMonitorStepInput,
+  ReplyMonitorStepPlan,
+  ReplyMonitorStepType,
+} from "../reply-monitor";

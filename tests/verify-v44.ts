@@ -32,6 +32,7 @@ import {
   runComputerSkillV1Request,
   createScheduledWorkflowPlan,
   createPlatformPublisherPlan,
+  createReplyMonitorPlan,
   runSkillRuntimeRequest,
   selectProjectForGoal,
   shouldBlockWorkflow,
@@ -1821,6 +1822,225 @@ async function testPlatformPublisherNoRealOperationsOccur(): Promise<string> {
   return "Platform publisher performed no real network/browser/computer/shell/scheduler/publish operation";
 }
 
+async function testReplyMonitorDeterministicPlan(): Promise<string> {
+  const input = {
+    platform: "xiaohongshu",
+    goal: "Plan comment monitoring and reply drafting.",
+    monitorWindow: {
+      startsAt: "2026-07-10T09:00:00.000Z",
+      endsAt: "2026-07-10T10:00:00.000Z",
+      timezone: "Asia/Shanghai",
+    },
+  };
+  const first = createReplyMonitorPlan(input);
+  const second = createReplyMonitorPlan(input);
+
+  assert(first.planId === second.planId, "Reply monitor plan id should be deterministic");
+  assert(first.platform === "xiaohongshu", `Unexpected platform: ${first.platform}`);
+  assert(first.steps.length === 8, `Expected default 8 monitor steps, got ${first.steps.length}`);
+  assert(first.riskLevel === "high", `Expected high risk for planned reply action, got ${first.riskLevel}`);
+  assert(first.requiresApproval === true, "Default reply monitor plan should require approval for reply actions");
+  assert(first.blockedReasons.length === 0, `Supported default monitor plan should not be blocked: ${first.blockedReasons.join(", ")}`);
+  assert(first.steps.some((step) => step.status === "requires_approval"), "Reply steps should require approval");
+  assert(first.steps.every((step) => step.plannedOnly === true), "All default monitor steps should be planned only");
+
+  return `Deterministic reply monitor plan id: ${first.planId}`;
+}
+
+async function testReplyMonitorSupportsGenericPlatforms(): Promise<string> {
+  const platforms = ["xiaohongshu", "douyin", "wechat_public_account", "generic_web_platform"];
+
+  for (const platform of platforms) {
+    const result = createReplyMonitorPlan({
+      platform,
+      goal: `Plan reply monitoring flow for ${platform}.`,
+    });
+
+    assert(result.platform === platform, `Unexpected platform: ${result.platform}`);
+    assert(result.blockedReasons.length === 0, `${platform} should be supported: ${result.blockedReasons.join(", ")}`);
+    assert(result.permissions.includes("content:reply:preview"), `${platform} should include content:reply:preview permission`);
+    assert(result.capabilities.includes("reply_monitor_planning"), `${platform} should include reply monitor planning capability`);
+  }
+
+  return `Reply monitor supports: ${platforms.join(", ")}`;
+}
+
+async function testReplyMonitorReplySendActionsRequireApproval(): Promise<string> {
+  const result = createReplyMonitorPlan({
+    platform: "douyin",
+    goal: "Plan reply drafting and future reply action.",
+    steps: [
+      {
+        id: "draft",
+        type: "draft_reply",
+        description: "Draft reply text from mock/local classified comments.",
+      },
+      {
+        id: "reply-action",
+        type: "plan_reply_action",
+        description: "Plan a future reply action after approval.",
+      },
+    ],
+  });
+
+  assert(result.requiresApproval === true, "Reply action plan should require approval");
+  assert(result.steps.every((step) => step.requiresApproval === true), "Each reply step should require approval");
+  assert(result.steps.every((step) => step.status === "requires_approval"), `Unexpected statuses: ${result.steps.map((step) => step.status).join(", ")}`);
+  assert(result.blockedReasons.length === 0, `Planned reply actions should not be blocked: ${result.blockedReasons.join(", ")}`);
+  assert(result.auditSummary.realReplyOperation === false, "Reply monitor must not reply");
+  assert(result.auditSummary.realCommentReadOperation === false, "Reply monitor must not read real comments");
+
+  return "Reply monitor reply actions require approval and remain planned only";
+}
+
+async function testReplyMonitorUnsupportedPlatformBlocked(): Promise<string> {
+  const result = createReplyMonitorPlan({
+    platform: "unsupported_platform",
+    goal: "Plan unsupported platform monitoring.",
+  });
+
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === true, "Unsupported platform should require approval/blocking");
+  assert(
+    result.blockedReasons.includes("Unsupported platform: unsupported_platform"),
+    `Missing unsupported platform reason: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(result.plannedOnly === true, "Unsupported platform result should still be planned only");
+
+  return "Unsupported reply monitor platform blocked";
+}
+
+async function testReplyMonitorResultIncludesRequiredShape(): Promise<string> {
+  const result = createReplyMonitorPlan({
+    platform: "wechat_public_account",
+    goal: "Inspect reply monitor result shape.",
+  });
+
+  assert(result.platform === "wechat_public_account", "Result should include platform");
+  assert(Array.isArray(result.steps) && result.steps.length > 0, "Result should include steps");
+  assert(typeof result.riskLevel === "string", "Result should include riskLevel");
+  assert(typeof result.requiresApproval === "boolean", "Result should include requiresApproval");
+  assert(Array.isArray(result.blockedReasons), "Result should include blockedReasons");
+  assert(Array.isArray(result.permissions) && result.permissions.length > 0, "Result should include permissions");
+  assert(Array.isArray(result.capabilities) && result.capabilities.length > 0, "Result should include capabilities");
+  assert(typeof result.summary === "string" && result.summary.length > 0, "Result should include summary");
+
+  return "Reply monitor result includes platform, steps, risk, approval, blocked reasons, permissions, capabilities, and summary";
+}
+
+async function testReplyMonitorIntegratesWithScheduledWorkflow(): Promise<string> {
+  const replyMonitorPlan = createReplyMonitorPlan({
+    platform: "generic_web_platform",
+    goal: "Plan scheduled reply monitoring.",
+  });
+  const workflow = createScheduledWorkflowPlan({
+    workflowName: "scheduled-reply-monitor",
+    goal: "Schedule a planned reply monitor.",
+    schedule: {
+      type: "recurring",
+      startsAt: "2026-07-11T10:00:00.000Z",
+      interval: "daily",
+    },
+    steps: [
+      {
+        id: "reply-monitor",
+        type: "content:reply",
+        description: "Run planned reply monitor after approval.",
+        replyMonitorPlan: {
+          planId: replyMonitorPlan.planId,
+          platform: replyMonitorPlan.platform,
+          plannedOnly: true,
+        },
+      },
+    ],
+  });
+  const [replyStep] = workflow.steps;
+
+  assert(workflow.requiresApproval === true, "Scheduled reply monitor workflow should require approval");
+  assert(replyStep.type === "content:reply", `Unexpected scheduled step type: ${replyStep.type}`);
+  assert(replyStep.replyMonitorPlan?.planId === replyMonitorPlan.planId, "Scheduled workflow should carry reply monitor plan id");
+  assert(replyStep.replyMonitorPlan?.platform === "generic_web_platform", "Scheduled workflow should carry reply monitor platform");
+  assert(replyStep.replyMonitorPlan?.plannedOnly === true, "Reply monitor plan handoff should be planned only");
+  assert(workflow.auditSummary.realSchedulerOperation === false, "Reply monitor scheduled workflow must not create scheduler");
+  assert(workflow.auditSummary.realPublishOperation === false, "Reply monitor scheduled workflow must not publish");
+
+  return "Reply monitor integrates with scheduled content:reply steps as planned-only metadata";
+}
+
+async function testReplyMonitorUnsafeStepsBlocked(): Promise<string> {
+  const result = createReplyMonitorPlan({
+    platform: "xiaohongshu",
+    goal: "Attempt unsafe reply monitor actions.",
+    steps: [
+      {
+        id: "unsafe-live-read",
+        type: "read_comments",
+        description: "Fetch comments and read real comments now.",
+      },
+      {
+        id: "unsafe-send",
+        type: "plan_reply_action",
+        description: "Send the reply immediately.",
+      },
+      {
+        id: "unsupported-step",
+        type: "direct_message",
+        description: "Click and send a direct message.",
+      },
+    ],
+  });
+
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === true, "Unsafe reply monitor plan should require approval/blocking");
+  assert(result.steps.every((step) => step.status === "blocked"), `Expected blocked steps, got ${result.steps.map((step) => step.status).join(", ")}`);
+  assert(
+    result.blockedReasons.some((reason) => reason.toLowerCase().includes("real comments")),
+    `Blocked reasons should mention real comments: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(
+    result.blockedReasons.some((reason) => reason.toLowerCase().includes("send")),
+    `Blocked reasons should mention send: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(
+    result.blockedReasons.some((reason) => reason.includes("Unsupported reply monitor step")),
+    `Blocked reasons should mention unsupported step: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Reply monitor unsafe real-read/click/send steps are blocked";
+}
+
+async function testReplyMonitorNoRealOperationsOccur(): Promise<string> {
+  const before = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(before.status === 0, `git status before reply monitor adapter failed: ${before.stderr}`);
+
+  const result = createReplyMonitorPlan({
+    platform: "generic_web_platform",
+    goal: "Create no-op reply monitor plan.",
+  });
+
+  const after = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(after.status === 0, `git status after reply monitor adapter failed: ${after.stderr}`);
+  assert(after.stdout === before.stdout, `Reply monitor adapter changed git status:\nBefore:\n${before.stdout}\nAfter:\n${after.stdout}`);
+  assert(result.auditSummary.realNetworkOperation === false, "Reply monitor must not perform network operations");
+  assert(result.auditSummary.realBrowserOperation === false, "Reply monitor must not perform browser operations");
+  assert(result.auditSummary.realComputerOperation === false, "Reply monitor must not perform computer operations");
+  assert(result.auditSummary.realShellOperation === false, "Reply monitor must not perform shell operations");
+  assert(result.auditSummary.realSchedulerOperation === false, "Reply monitor must not perform scheduler operations");
+  assert(result.auditSummary.realPublishOperation === false, "Reply monitor must not perform publish operations");
+  assert(result.auditSummary.realReplyOperation === false, "Reply monitor must not perform reply operations");
+  assert(result.auditSummary.realCommentReadOperation === false, "Reply monitor must not read real comments");
+
+  return "Reply monitor performed no real network/browser/computer/shell/scheduler/publish/reply/comment-read operation";
+}
+
 async function testPonytailTrustedRepoAcceptedMetadataOnly(): Promise<string> {
   const manifests = await loadPonytailFixtureManifests();
   const [manifest] = manifests;
@@ -3492,6 +3712,14 @@ async function main(): Promise<void> {
   await runTest("Platform Publisher Skill v1 integrates with scheduled content publish", testPlatformPublisherIntegratesWithScheduledWorkflow);
   await runTest("Platform Publisher Skill v1 unsafe steps are blocked", testPlatformPublisherUnsafeStepsBlocked);
   await runTest("Platform Publisher Skill v1 performs no real network/browser/computer/scheduler/publish action", testPlatformPublisherNoRealOperationsOccur);
+  await runTest("Reply Monitor Skill v1 creates deterministic monitor plans", testReplyMonitorDeterministicPlan);
+  await runTest("Reply Monitor Skill v1 supports generic platforms", testReplyMonitorSupportsGenericPlatforms);
+  await runTest("Reply Monitor Skill v1 reply/send actions require approval", testReplyMonitorReplySendActionsRequireApproval);
+  await runTest("Reply Monitor Skill v1 unsupported platform is blocked", testReplyMonitorUnsupportedPlatformBlocked);
+  await runTest("Reply Monitor Skill v1 result includes required shape", testReplyMonitorResultIncludesRequiredShape);
+  await runTest("Reply Monitor Skill v1 integrates with scheduled content reply", testReplyMonitorIntegratesWithScheduledWorkflow);
+  await runTest("Reply Monitor Skill v1 unsafe steps are blocked", testReplyMonitorUnsafeStepsBlocked);
+  await runTest("Reply Monitor Skill v1 performs no real network/browser/computer/scheduler/reply action", testReplyMonitorNoRealOperationsOccur);
   await runTest("Ponytail trusted repo accepted as metadata-only source", testPonytailTrustedRepoAcceptedMetadataOnly);
   await runTest("Ponytail coding skill capabilities recognized", testPonytailCodingSkillCapabilitiesRecognized);
   await runTest("Ponytail remote code execution remains blocked", testPonytailRemoteCodeExecutionBlocked);
