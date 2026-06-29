@@ -29,6 +29,7 @@ import {
   runProjectHealthCheck,
   runGitHubSkillV1Request,
   runBrowserSkillV1Request,
+  runComputerSkillV1Request,
   runSkillRuntimeRequest,
   selectProjectForGoal,
   shouldBlockWorkflow,
@@ -1167,6 +1168,193 @@ async function testBrowserSkillV1NoRealOperationsOccur(): Promise<string> {
   assert(result.auditSummary.realPublishOperation === false, "Browser Skill v1 must not perform publish operations");
 
   return "Browser Skill v1 performed no real network/browser/computer/shell/publish operation";
+}
+
+async function testComputerSkillV1ObserveMockPlanWorks(): Promise<string> {
+  const result = runComputerSkillV1Request({
+    goal: "observe local mock screen",
+    mode: "mock",
+    action: {
+      type: "computer:observe",
+      description: "Observe a mock/local screen snapshot.",
+      input: { screen: "mock://local/screen" },
+    },
+  });
+
+  assert(result.status === "completed", `Expected completed computer:observe, got ${result.status}`);
+  assert(result.actionType === "computer:observe", `Unexpected action type: ${result.actionType}`);
+  assert(result.riskLevel === "medium", `Expected medium risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === false, "computer:observe mock/local plan should not require approval");
+  assert(result.permissions.includes("computer:observe"), "computer:observe permission should be reported");
+  assert(result.capabilities.includes("computer_observe"), "computer_observe capability should be reported");
+  assert(result.plannedAction.advisoryOnly === true, "Computer Use Skill v1 observe should be advisory only");
+  assert(result.auditSummary.realComputerOperation === false, "computer:observe must not perform real computer work");
+  assert(result.auditSummary.realBrowserOperation === false, "computer:observe must not perform browser work");
+  assert(result.auditSummary.realNetworkOperation === false, "computer:observe must not perform network work");
+
+  return result.summary;
+}
+
+async function testComputerSkillV1ActRequiresApproval(): Promise<string> {
+  const result = runComputerSkillV1Request({
+    goal: "plan computer action",
+    mode: "mock",
+    action: {
+      type: "computer:act",
+      description: "Plan a computer action without executing it.",
+    },
+  });
+
+  assert(result.status === "blocked" || result.status === "requires_approval", `Expected blocked/approval computer:act, got ${result.status}`);
+  assert(result.requiresApproval === true, "computer:act should require approval");
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.permissions.includes("computer:act"), "computer:act permission should be reported");
+  assert(result.capabilities.includes("computer_act"), "computer_act capability should be reported");
+  assert(result.plannedAction.realOperationPerformed === false, "computer:act should only return a planned action");
+  assert(result.summary.includes("No real computer action was performed"), `Unexpected summary: ${result.summary}`);
+
+  return "Computer Use Skill v1 computer:act is approval-gated/planned only";
+}
+
+async function testComputerSkillV1HighRiskActionsBlocked(): Promise<string> {
+  const cases = [
+    { label: "click", description: "Plan to click a desktop button." },
+    { label: "type", description: "Plan to type into a desktop text field." },
+    { label: "submit", description: "Plan to submit a desktop form." },
+    { label: "upload", description: "Plan to upload a file from the computer." },
+  ];
+
+  for (const item of cases) {
+    const result = runComputerSkillV1Request({
+      goal: `plan computer ${item.label}`,
+      mode: "mock",
+      action: {
+        type: "computer:act",
+        description: item.description,
+      },
+    });
+
+    assert(result.status === "blocked" || result.status === "requires_approval", `${item.label} should be blocked/approval-gated, got ${result.status}`);
+    assert(result.requiresApproval === true, `${item.label} should require approval`);
+    assert(
+      result.blockedReasons.some((reason) => reason.toLowerCase().includes(item.label)),
+      `${item.label} blocked reasons should mention the intent: ${result.blockedReasons.join(", ")}`,
+    );
+    assert(result.auditSummary.realComputerOperation === false, `${item.label} must not use a real computer`);
+    assert(result.auditSummary.realBrowserOperation === false, `${item.label} must not use a real browser`);
+  }
+
+  return "Computer click/type/submit/upload intents are blocked or approval-gated";
+}
+
+async function testComputerSkillV1DangerousActionsBlocked(): Promise<string> {
+  const cases = [
+    { label: "delete", description: "Plan to delete a local item." },
+    { label: "pay", description: "Plan to pay an invoice." },
+    { label: "send", description: "Plan to send messages." },
+    { label: "login", description: "Plan to login to an app." },
+    { label: "system-setting", description: "Plan to change system settings." },
+  ];
+
+  for (const item of cases) {
+    const result = runComputerSkillV1Request({
+      goal: `plan computer ${item.label}`,
+      mode: "mock",
+      action: {
+        type: "computer:act",
+        description: item.description,
+      },
+    });
+
+    assert(result.status === "blocked", `${item.label} should be blocked, got ${result.status}`);
+    assert(result.requiresApproval === true, `${item.label} should require approval`);
+    assert(
+      result.blockedReasons.some((reason) => reason.toLowerCase().includes(item.label)),
+      `${item.label} blocked reasons should mention the intent: ${result.blockedReasons.join(", ")}`,
+    );
+    assert(result.auditSummary.realComputerOperation === false, `${item.label} must not use a real computer`);
+    assert(result.plannedAction.realOperationPerformed === false, `${item.label} should only be planned`);
+  }
+
+  return "Computer delete/pay/send/login/system-setting intents are blocked";
+}
+
+async function testComputerSkillV1ResultIncludesRequiredShape(): Promise<string> {
+  const result = runComputerSkillV1Request({
+    goal: "inspect computer result shape",
+    mode: "local",
+    action: {
+      type: "computer:observe",
+      description: "Observe local computer fixture.",
+    },
+    capabilities: ["computer_fixture_observe"],
+    permissions: ["computer:observe"],
+  });
+
+  assert(typeof result.riskLevel === "string", "Result should include riskLevel");
+  assert(typeof result.requiresApproval === "boolean", "Result should include requiresApproval");
+  assert(Array.isArray(result.blockedReasons), "Result should include blockedReasons");
+  assert(Array.isArray(result.permissions), "Result should include permissions");
+  assert(Array.isArray(result.capabilities), "Result should include capabilities");
+  assert(typeof result.summary === "string" && result.summary.length > 0, "Result should include summary");
+  assert(result.permissions.includes("computer:observe"), "Result should include computer:observe permission");
+  assert(result.capabilities.includes("computer_observe"), "Result should include computer_observe capability");
+  assert(result.capabilities.includes("computer_fixture_observe"), "Result should include requested capability");
+
+  return "Computer Use Skill v1 result includes risk, approval, blocked reasons, permissions, capabilities, and summary";
+}
+
+async function testComputerSkillV1ExternalRuntimeBlocked(): Promise<string> {
+  const result = runComputerSkillV1Request({
+    goal: "try external computer runtime",
+    mode: "external",
+    action: {
+      type: "computer:observe",
+      description: "Observe using an external computer runtime.",
+    },
+  });
+
+  assert(result.status === "blocked", `Expected blocked external computer runtime, got ${result.status}`);
+  assert(result.requiresApproval === true, "External computer runtime should require approval/blocking");
+  assert(
+    result.blockedReasons.includes("External computer runtime is disabled in Computer Use Skill v1"),
+    `Missing external computer block reason: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "External computer runtime blocked";
+}
+
+async function testComputerSkillV1NoRealOperationsOccur(): Promise<string> {
+  const before = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(before.status === 0, `git status before computer adapter failed: ${before.stderr}`);
+
+  const result = runComputerSkillV1Request({
+    goal: "computer no-op audit",
+    mode: "mock",
+    action: {
+      type: "computer:observe",
+      description: "Observe mock computer fixture only.",
+    },
+  });
+
+  const after = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(after.status === 0, `git status after computer adapter failed: ${after.stderr}`);
+  assert(after.stdout === before.stdout, `Computer adapter changed git status:\nBefore:\n${before.stdout}\nAfter:\n${after.stdout}`);
+  assert(result.auditSummary.realNetworkOperation === false, "Computer Use Skill v1 must not perform network operations");
+  assert(result.auditSummary.realBrowserOperation === false, "Computer Use Skill v1 must not perform browser operations");
+  assert(result.auditSummary.realComputerOperation === false, "Computer Use Skill v1 must not perform computer operations");
+  assert(result.auditSummary.realShellOperation === false, "Computer Use Skill v1 must not perform shell operations");
+  assert(result.auditSummary.realPublishOperation === false, "Computer Use Skill v1 must not perform publish operations");
+
+  return "Computer Use Skill v1 performed no real network/browser/computer/shell/publish operation";
 }
 
 async function testPonytailTrustedRepoAcceptedMetadataOnly(): Promise<string> {
@@ -2819,6 +3007,13 @@ async function main(): Promise<void> {
   await runTest("Browser Skill v1 result includes required action shape", testBrowserSkillV1ResultIncludesRequiredShape);
   await runTest("Browser Skill v1 external runtime is blocked", testBrowserSkillV1ExternalRuntimeBlocked);
   await runTest("Browser Skill v1 performs no real network/browser/computer/shell operation", testBrowserSkillV1NoRealOperationsOccur);
+  await runTest("Computer Use Skill v1 mock computer:observe plan works", testComputerSkillV1ObserveMockPlanWorks);
+  await runTest("Computer Use Skill v1 computer:act requires approval", testComputerSkillV1ActRequiresApproval);
+  await runTest("Computer Use Skill v1 high-risk actions are blocked or approval-gated", testComputerSkillV1HighRiskActionsBlocked);
+  await runTest("Computer Use Skill v1 delete/pay/send/login/system-setting intents are blocked", testComputerSkillV1DangerousActionsBlocked);
+  await runTest("Computer Use Skill v1 result includes required action shape", testComputerSkillV1ResultIncludesRequiredShape);
+  await runTest("Computer Use Skill v1 external runtime is blocked", testComputerSkillV1ExternalRuntimeBlocked);
+  await runTest("Computer Use Skill v1 performs no real network/browser/computer/shell operation", testComputerSkillV1NoRealOperationsOccur);
   await runTest("Ponytail trusted repo accepted as metadata-only source", testPonytailTrustedRepoAcceptedMetadataOnly);
   await runTest("Ponytail coding skill capabilities recognized", testPonytailCodingSkillCapabilitiesRecognized);
   await runTest("Ponytail remote code execution remains blocked", testPonytailRemoteCodeExecutionBlocked);

@@ -168,3 +168,11 @@ export type {
   BrowserSkillV1Request,
   BrowserSkillV1Result,
 } from "../browser-skill";
+export { runComputerSkillV1Request } from "../computer-skill";
+export type {
+  ComputerSkillV1Action,
+  ComputerSkillV1ActionType,
+  ComputerSkillV1PlannedAction,
+  ComputerSkillV1Request,
+  ComputerSkillV1Result,
+} from "../computer-skill";
