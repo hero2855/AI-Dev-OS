@@ -32,6 +32,11 @@ export type ScheduledWorkflowStepInput = {
   type: ScheduledWorkflowStepType | string;
   description: string;
   input?: unknown;
+  publisherPlan?: {
+    planId: string;
+    platform: string;
+    plannedOnly: true;
+  };
 };
 
 export type ScheduledWorkflowPlanRequest = {
@@ -53,6 +58,11 @@ export type ScheduledWorkflowStepPlan = {
   blockedReasons: string[];
   permissions: string[];
   capabilities: string[];
+  publisherPlan?: {
+    planId: string;
+    platform: string;
+    plannedOnly: true;
+  };
   summary: string;
 };
 

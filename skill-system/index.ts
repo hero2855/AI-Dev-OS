@@ -185,3 +185,12 @@ export type {
   ScheduledWorkflowStepPlan,
   ScheduledWorkflowStepType,
 } from "../scheduled-workflow";
+export { createPlatformPublisherPlan } from "../platform-publisher";
+export type {
+  PlatformPublisherPlanRequest,
+  PlatformPublisherPlanResult,
+  PlatformPublisherPlatform,
+  PlatformPublisherStepPlan,
+  PlatformPublishStepInput,
+  PlatformPublishStepType,
+} from "../platform-publisher";

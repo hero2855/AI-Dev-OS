@@ -31,6 +31,7 @@ import {
   runBrowserSkillV1Request,
   runComputerSkillV1Request,
   createScheduledWorkflowPlan,
+  createPlatformPublisherPlan,
   runSkillRuntimeRequest,
   selectProjectForGoal,
   shouldBlockWorkflow,
@@ -1592,6 +1593,232 @@ async function testScheduledWorkflowNoRealOperationsOccur(): Promise<string> {
   assert(result.auditSummary.realPublishOperation === false, "Scheduled workflow must not perform publish operations");
 
   return "Scheduled workflow agent performed no real timer/scheduler/network/browser/computer/shell/publish operation";
+}
+
+async function testPlatformPublisherDeterministicPlan(): Promise<string> {
+  const input = {
+    platform: "xiaohongshu",
+    goal: "Plan a post publication.",
+    post: {
+      title: "Launch note",
+      body: "Draft body",
+      tags: ["ai-dev-os", "planning"],
+      media: ["mock://asset/image.png"],
+      scheduledAt: "2026-07-08T09:00:00.000Z",
+    },
+  };
+  const first = createPlatformPublisherPlan(input);
+  const second = createPlatformPublisherPlan(input);
+
+  assert(first.planId === second.planId, "Platform publisher plan id should be deterministic");
+  assert(first.platform === "xiaohongshu", `Unexpected platform: ${first.platform}`);
+  assert(first.steps.length === 9, `Expected default 9 publish steps, got ${first.steps.length}`);
+  assert(first.riskLevel === "high", `Expected high risk for planned publish flow, got ${first.riskLevel}`);
+  assert(first.requiresApproval === true, "Platform publish plan should require approval");
+  assert(first.blockedReasons.length === 0, `Supported default publish plan should not be blocked: ${first.blockedReasons.join(", ")}`);
+  assert(first.steps.every((step) => step.status === "requires_approval"), "All default publish steps should require approval");
+  assert(first.steps.every((step) => step.plannedOnly === true), "All default publish steps should be planned only");
+
+  return `Deterministic platform publish plan id: ${first.planId}`;
+}
+
+async function testPlatformPublisherSupportsGenericPlatforms(): Promise<string> {
+  const platforms = ["xiaohongshu", "douyin", "wechat_public_account", "generic_web_platform"];
+
+  for (const platform of platforms) {
+    const result = createPlatformPublisherPlan({
+      platform,
+      goal: `Plan publish flow for ${platform}.`,
+    });
+
+    assert(result.platform === platform, `Unexpected platform: ${result.platform}`);
+    assert(result.requiresApproval === true, `${platform} should require approval`);
+    assert(result.blockedReasons.length === 0, `${platform} should be supported: ${result.blockedReasons.join(", ")}`);
+    assert(result.permissions.includes("content:publish"), `${platform} should include content:publish permission`);
+    assert(result.capabilities.includes("platform_publish_planning"), `${platform} should include platform publish planning capability`);
+  }
+
+  return `Platform publisher supports: ${platforms.join(", ")}`;
+}
+
+async function testPlatformPublisherPublishSubmitUploadLoginRequireApproval(): Promise<string> {
+  const result = createPlatformPublisherPlan({
+    platform: "douyin",
+    goal: "Plan upload and publish steps.",
+    steps: [
+      {
+        id: "login-state",
+        type: "check_login_state",
+        description: "Check login state without logging in.",
+      },
+      {
+        id: "upload",
+        type: "upload_media",
+        description: "Plan media upload only.",
+      },
+      {
+        id: "submit",
+        type: "submit_publish",
+        description: "Plan submit/publish only.",
+      },
+    ],
+  });
+
+  assert(result.requiresApproval === true, "Publish/upload/login-state plan should require approval");
+  assert(result.steps.every((step) => step.requiresApproval === true), "Each publish step should require approval");
+  assert(result.steps.every((step) => step.status === "requires_approval"), `Unexpected statuses: ${result.steps.map((step) => step.status).join(", ")}`);
+  assert(result.steps.every((step) => step.plannedOnly === true), "Each publish step should remain planned only");
+  assert(result.blockedReasons.length === 0, `Approval-gated publish steps should not be blocked: ${result.blockedReasons.join(", ")}`);
+  assert(result.auditSummary.realPublishOperation === false, "Publish plan must not publish");
+  assert(result.auditSummary.realBrowserOperation === false, "Publish plan must not run browser");
+  assert(result.auditSummary.realComputerOperation === false, "Publish plan must not run computer");
+
+  return "Platform publish/submit/upload/login-state steps require approval and remain planned only";
+}
+
+async function testPlatformPublisherUnsupportedPlatformBlocked(): Promise<string> {
+  const result = createPlatformPublisherPlan({
+    platform: "unsupported_platform",
+    goal: "Plan unsupported platform publish.",
+  });
+
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === true, "Unsupported platform should require approval/blocking");
+  assert(
+    result.blockedReasons.includes("Unsupported platform: unsupported_platform"),
+    `Missing unsupported platform reason: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(result.plannedOnly === true, "Unsupported platform result should still be planned only");
+
+  return "Unsupported platform publisher plan blocked";
+}
+
+async function testPlatformPublisherResultIncludesRequiredShape(): Promise<string> {
+  const result = createPlatformPublisherPlan({
+    platform: "wechat_public_account",
+    goal: "Inspect publisher result shape.",
+  });
+
+  assert(result.platform === "wechat_public_account", "Result should include platform");
+  assert(Array.isArray(result.steps) && result.steps.length > 0, "Result should include steps");
+  assert(typeof result.riskLevel === "string", "Result should include riskLevel");
+  assert(typeof result.requiresApproval === "boolean", "Result should include requiresApproval");
+  assert(Array.isArray(result.blockedReasons), "Result should include blockedReasons");
+  assert(Array.isArray(result.permissions) && result.permissions.length > 0, "Result should include permissions");
+  assert(Array.isArray(result.capabilities) && result.capabilities.length > 0, "Result should include capabilities");
+  assert(typeof result.summary === "string" && result.summary.length > 0, "Result should include summary");
+
+  return "Platform publisher result includes platform, steps, risk, approval, blocked reasons, permissions, capabilities, and summary";
+}
+
+async function testPlatformPublisherIntegratesWithScheduledWorkflow(): Promise<string> {
+  const publisherPlan = createPlatformPublisherPlan({
+    platform: "generic_web_platform",
+    goal: "Plan scheduled generic web publish.",
+  });
+  const workflow = createScheduledWorkflowPlan({
+    workflowName: "scheduled-platform-publish",
+    goal: "Schedule a planned platform publish.",
+    schedule: {
+      type: "one-time",
+      runAt: "2026-07-09T10:00:00.000Z",
+    },
+    steps: [
+      {
+        id: "publish",
+        type: "content:publish",
+        description: "Run planned platform publisher after approval.",
+        publisherPlan: {
+          planId: publisherPlan.planId,
+          platform: publisherPlan.platform,
+          plannedOnly: true,
+        },
+      },
+    ],
+  });
+  const [publishStep] = workflow.steps;
+
+  assert(workflow.requiresApproval === true, "Scheduled publisher workflow should require approval");
+  assert(publishStep.type === "content:publish", `Unexpected scheduled step type: ${publishStep.type}`);
+  assert(publishStep.publisherPlan?.planId === publisherPlan.planId, "Scheduled workflow should carry publisher plan id");
+  assert(publishStep.publisherPlan?.platform === "generic_web_platform", "Scheduled workflow should carry publisher platform");
+  assert(publishStep.publisherPlan?.plannedOnly === true, "Publisher plan handoff should be planned only");
+  assert(workflow.auditSummary.realSchedulerOperation === false, "Publisher scheduled workflow must not create scheduler");
+  assert(workflow.auditSummary.realPublishOperation === false, "Publisher scheduled workflow must not publish");
+
+  return "Platform publisher integrates with scheduled content:publish steps as planned-only metadata";
+}
+
+async function testPlatformPublisherUnsafeStepsBlocked(): Promise<string> {
+  const result = createPlatformPublisherPlan({
+    platform: "xiaohongshu",
+    goal: "Attempt unsafe publisher actions.",
+    steps: [
+      {
+        id: "unsafe-login",
+        type: "open_platform",
+        description: "Login to the account.",
+      },
+      {
+        id: "unsafe-comment",
+        type: "preview_post",
+        description: "Comment and reply after preview.",
+      },
+      {
+        id: "unsupported-step",
+        type: "direct_message",
+        description: "Send a direct message.",
+      },
+    ],
+  });
+
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === true, "Unsafe publisher plan should require approval/blocking");
+  assert(result.steps.every((step) => step.status === "blocked"), `Expected blocked steps, got ${result.steps.map((step) => step.status).join(", ")}`);
+  assert(
+    result.blockedReasons.some((reason) => reason.toLowerCase().includes("login")),
+    `Blocked reasons should mention login: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(
+    result.blockedReasons.some((reason) => reason.toLowerCase().includes("comment")),
+    `Blocked reasons should mention comment: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(
+    result.blockedReasons.some((reason) => reason.includes("Unsupported platform publish step")),
+    `Blocked reasons should mention unsupported step: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Platform publisher unsafe login/comment/reply/send steps are blocked";
+}
+
+async function testPlatformPublisherNoRealOperationsOccur(): Promise<string> {
+  const before = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(before.status === 0, `git status before publisher adapter failed: ${before.stderr}`);
+
+  const result = createPlatformPublisherPlan({
+    platform: "generic_web_platform",
+    goal: "Create no-op publisher plan.",
+  });
+
+  const after = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(after.status === 0, `git status after publisher adapter failed: ${after.stderr}`);
+  assert(after.stdout === before.stdout, `Publisher adapter changed git status:\nBefore:\n${before.stdout}\nAfter:\n${after.stdout}`);
+  assert(result.auditSummary.realNetworkOperation === false, "Publisher must not perform network operations");
+  assert(result.auditSummary.realBrowserOperation === false, "Publisher must not perform browser operations");
+  assert(result.auditSummary.realComputerOperation === false, "Publisher must not perform computer operations");
+  assert(result.auditSummary.realShellOperation === false, "Publisher must not perform shell operations");
+  assert(result.auditSummary.realSchedulerOperation === false, "Publisher must not perform scheduler operations");
+  assert(result.auditSummary.realPublishOperation === false, "Publisher must not perform publish operations");
+
+  return "Platform publisher performed no real network/browser/computer/shell/scheduler/publish operation";
 }
 
 async function testPonytailTrustedRepoAcceptedMetadataOnly(): Promise<string> {
@@ -3257,6 +3484,14 @@ async function main(): Promise<void> {
   await runTest("Scheduled Workflow Agent v1 result includes required shape", testScheduledWorkflowResultIncludesRequiredShape);
   await runTest("Scheduled Workflow Agent v1 unsafe steps are blocked or approval-gated", testScheduledWorkflowUnsafeStepsBlockedOrApprovalGated);
   await runTest("Scheduled Workflow Agent v1 performs no real timer/scheduler/browser/computer action", testScheduledWorkflowNoRealOperationsOccur);
+  await runTest("Platform Publisher Skill v1 creates deterministic publish plans", testPlatformPublisherDeterministicPlan);
+  await runTest("Platform Publisher Skill v1 supports generic platforms", testPlatformPublisherSupportsGenericPlatforms);
+  await runTest("Platform Publisher Skill v1 publish/submit/upload/login steps require approval", testPlatformPublisherPublishSubmitUploadLoginRequireApproval);
+  await runTest("Platform Publisher Skill v1 unsupported platform is blocked", testPlatformPublisherUnsupportedPlatformBlocked);
+  await runTest("Platform Publisher Skill v1 result includes required shape", testPlatformPublisherResultIncludesRequiredShape);
+  await runTest("Platform Publisher Skill v1 integrates with scheduled content publish", testPlatformPublisherIntegratesWithScheduledWorkflow);
+  await runTest("Platform Publisher Skill v1 unsafe steps are blocked", testPlatformPublisherUnsafeStepsBlocked);
+  await runTest("Platform Publisher Skill v1 performs no real network/browser/computer/scheduler/publish action", testPlatformPublisherNoRealOperationsOccur);
   await runTest("Ponytail trusted repo accepted as metadata-only source", testPonytailTrustedRepoAcceptedMetadataOnly);
   await runTest("Ponytail coding skill capabilities recognized", testPonytailCodingSkillCapabilitiesRecognized);
   await runTest("Ponytail remote code execution remains blocked", testPonytailRemoteCodeExecutionBlocked);
