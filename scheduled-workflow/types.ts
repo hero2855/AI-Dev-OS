@@ -42,6 +42,11 @@ export type ScheduledWorkflowStepInput = {
     platform: string;
     plannedOnly: true;
   };
+  contentFollowUpPlan?: {
+    planId: string;
+    platform: string;
+    plannedOnly: true;
+  };
 };
 
 export type ScheduledWorkflowPlanRequest = {
@@ -69,6 +74,11 @@ export type ScheduledWorkflowStepPlan = {
     plannedOnly: true;
   };
   replyMonitorPlan?: {
+    planId: string;
+    platform: string;
+    plannedOnly: true;
+  };
+  contentFollowUpPlan?: {
     planId: string;
     platform: string;
     plannedOnly: true;

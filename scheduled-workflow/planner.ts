@@ -180,6 +180,7 @@ function createStepPlan(step: ScheduledWorkflowStepInput, index: number): Schedu
     capabilities: profile?.capabilities ?? [],
     publisherPlan: step.type === "content:publish" ? step.publisherPlan : undefined,
     replyMonitorPlan: step.type === "content:reply" ? step.replyMonitorPlan : undefined,
+    contentFollowUpPlan: step.type === "content:create" ? step.contentFollowUpPlan : undefined,
     summary: summarizeStep(step, status, blockedReasons),
   };
 }

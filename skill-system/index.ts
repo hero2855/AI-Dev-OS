@@ -203,3 +203,14 @@ export type {
   ReplyMonitorStepPlan,
   ReplyMonitorStepType,
 } from "../reply-monitor";
+export { createContentFollowUpPlan } from "../content-follow-up";
+export type {
+  ContentFollowUpContentType,
+  ContentFollowUpIdea,
+  ContentFollowUpPlanRequest,
+  ContentFollowUpPlanResult,
+  ContentFollowUpPlatform,
+  ContentFollowUpPriority,
+  ContentFollowUpSignalCategory,
+  ContentFollowUpSignalInput,
+} from "../content-follow-up";

@@ -33,6 +33,7 @@ import {
   createScheduledWorkflowPlan,
   createPlatformPublisherPlan,
   createReplyMonitorPlan,
+  createContentFollowUpPlan,
   runSkillRuntimeRequest,
   selectProjectForGoal,
   shouldBlockWorkflow,
@@ -2041,6 +2042,261 @@ async function testReplyMonitorNoRealOperationsOccur(): Promise<string> {
   return "Reply monitor performed no real network/browser/computer/shell/scheduler/publish/reply/comment-read operation";
 }
 
+async function testContentFollowUpDeterministicPlan(): Promise<string> {
+  const input = {
+    platform: "xiaohongshu",
+    goal: "Plan follow-up content from mock comment categories.",
+    signals: [
+      {
+        category: "questions",
+        examples: ["How does this work?", "Can it support teams?"],
+      },
+      {
+        category: "common_pain_points",
+        summary: "People keep mentioning setup friction.",
+      },
+    ],
+  };
+  const first = createContentFollowUpPlan(input);
+  const second = createContentFollowUpPlan(input);
+
+  assert(first.planId === second.planId, "Content follow-up plan id should be deterministic");
+  assert(first.platform === "xiaohongshu", `Unexpected platform: ${first.platform}`);
+  assert(first.ideas.length === 2, `Expected 2 follow-up ideas, got ${first.ideas.length}`);
+  assert(first.riskLevel === "low", `Expected low risk for question/pain point ideas, got ${first.riskLevel}`);
+  assert(first.requiresApproval === false, "Low-risk follow-up plan should not require approval");
+  assert(first.blockedReasons.length === 0, `Supported follow-up plan should not be blocked: ${first.blockedReasons.join(", ")}`);
+  assert(first.ideas.every((idea) => idea.platform === "xiaohongshu"), "Each idea should carry platform");
+
+  return `Deterministic content follow-up plan id: ${first.planId}`;
+}
+
+async function testContentFollowUpSupportsGenericPlatforms(): Promise<string> {
+  const platforms = ["xiaohongshu", "douyin", "wechat_public_account", "generic_web_platform"];
+
+  for (const platform of platforms) {
+    const result = createContentFollowUpPlan({
+      platform,
+      goal: `Plan follow-up content for ${platform}.`,
+    });
+
+    assert(result.platform === platform, `Unexpected platform: ${result.platform}`);
+    assert(result.blockedReasons.length === 0, `${platform} should be supported: ${result.blockedReasons.join(", ")}`);
+    assert(result.permissions.includes("content:create:local"), `${platform} should include content:create:local permission`);
+    assert(result.capabilities.includes("content_follow_up_planning"), `${platform} should include follow-up planning capability`);
+  }
+
+  return `Content follow-up supports: ${platforms.join(", ")}`;
+}
+
+async function testContentFollowUpHighRiskSignalsRequireApproval(): Promise<string> {
+  const result = createContentFollowUpPlan({
+    platform: "douyin",
+    goal: "Plan high-risk follow-up topics.",
+    signals: [
+      {
+        category: "negative_feedback",
+        summary: "Mock/local comments mention reliability concerns.",
+      },
+      {
+        category: "objections",
+        summary: "Mock/local comments question pricing and fit.",
+      },
+    ],
+  });
+
+  assert(result.riskLevel === "high", `Expected high risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === true, "Negative feedback and objections should require approval");
+  assert(result.ideas.every((idea) => idea.requiresApproval === true), "Each high-risk idea should require approval");
+  assert(result.ideas.every((idea) => idea.riskLevel === "high"), `Unexpected idea risks: ${result.ideas.map((idea) => idea.riskLevel).join(", ")}`);
+  assert(result.blockedReasons.length === 0, `High-risk planned ideas should not be blocked: ${result.blockedReasons.join(", ")}`);
+
+  return "Content follow-up high-risk negative-feedback/objection ideas require approval";
+}
+
+async function testContentFollowUpUnsupportedPlatformBlocked(): Promise<string> {
+  const result = createContentFollowUpPlan({
+    platform: "unsupported_platform",
+    goal: "Plan unsupported follow-up content.",
+  });
+
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === true, "Unsupported platform should require approval/blocking");
+  assert(
+    result.blockedReasons.includes("Unsupported platform: unsupported_platform"),
+    `Missing unsupported platform reason: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(result.plannedOnly === true, "Unsupported platform result should still be planned only");
+
+  return "Unsupported content follow-up platform blocked";
+}
+
+async function testContentFollowUpResultIncludesRequiredShape(): Promise<string> {
+  const result = createContentFollowUpPlan({
+    platform: "wechat_public_account",
+    goal: "Inspect content follow-up result shape.",
+    signals: [
+      {
+        category: "feature_requests",
+        summary: "Mock/local comments ask for templates.",
+      },
+    ],
+  });
+  const [idea] = result.ideas;
+
+  assert(Array.isArray(result.ideas) && result.ideas.length === 1, "Result should include ideas");
+  assert(typeof idea.title === "string" && idea.title.length > 0, "Idea should include title");
+  assert(typeof idea.angle === "string" && idea.angle.length > 0, "Idea should include angle");
+  assert(idea.platform === "wechat_public_account", "Idea should include platform");
+  assert(typeof idea.contentType === "string" && idea.contentType.length > 0, "Idea should include contentType");
+  assert(typeof idea.priority === "string" && idea.priority.length > 0, "Idea should include priority");
+  assert(typeof idea.reason === "string" && idea.reason.length > 0, "Idea should include reason");
+  assert(typeof idea.sourceSignal === "string" && idea.sourceSignal.length > 0, "Idea should include sourceSignal");
+  assert(typeof idea.riskLevel === "string", "Idea should include riskLevel");
+  assert(typeof idea.requiresApproval === "boolean", "Idea should include requiresApproval");
+  assert(typeof result.riskLevel === "string", "Result should include riskLevel");
+  assert(typeof result.requiresApproval === "boolean", "Result should include requiresApproval");
+  assert(Array.isArray(result.blockedReasons), "Result should include blockedReasons");
+  assert(Array.isArray(result.permissions) && result.permissions.length > 0, "Result should include permissions");
+  assert(Array.isArray(result.capabilities) && result.capabilities.length > 0, "Result should include capabilities");
+  assert(typeof result.summary === "string" && result.summary.length > 0, "Result should include summary");
+
+  return "Content follow-up result includes ideas, risk, approval, blocked reasons, permissions, capabilities, and summary";
+}
+
+async function testContentFollowUpIntegratesWithReplyMonitorMetadata(): Promise<string> {
+  const replyMonitorPlan = createReplyMonitorPlan({
+    platform: "generic_web_platform",
+    goal: "Plan reply monitoring with follow-up idea handoff.",
+  });
+  const followUpPlan = createContentFollowUpPlan({
+    platform: "generic_web_platform",
+    goal: "Plan follow-up content from reply monitor metadata.",
+    replyMonitorPlan: {
+      planId: replyMonitorPlan.planId,
+      platform: replyMonitorPlan.platform,
+      plannedOnly: true,
+    },
+    signals: [
+      {
+        category: "leads",
+        summary: "Mock/local lead-like comments ask about next steps.",
+      },
+    ],
+  });
+
+  assert(followUpPlan.replyMonitorPlan?.planId === replyMonitorPlan.planId, "Follow-up plan should carry reply monitor plan id");
+  assert(followUpPlan.replyMonitorPlan?.platform === "generic_web_platform", "Follow-up plan should carry reply monitor platform");
+  assert(followUpPlan.replyMonitorPlan?.plannedOnly === true, "Reply monitor handoff should remain planned only");
+  assert(followUpPlan.auditSummary.realCommentReadOperation === false, "Follow-up plan must not read real comments");
+
+  return "Content follow-up integrates with reply monitor metadata as planned-only input";
+}
+
+async function testContentFollowUpIntegratesWithScheduledWorkflow(): Promise<string> {
+  const followUpPlan = createContentFollowUpPlan({
+    platform: "generic_web_platform",
+    goal: "Plan scheduled content creation from follow-up ideas.",
+  });
+  const workflow = createScheduledWorkflowPlan({
+    workflowName: "scheduled-content-follow-up",
+    goal: "Schedule planned follow-up content creation.",
+    schedule: {
+      type: "one-time",
+      runAt: "2026-07-12T10:00:00.000Z",
+    },
+    steps: [
+      {
+        id: "follow-up-content",
+        type: "content:create",
+        description: "Create planned follow-up content locally.",
+        contentFollowUpPlan: {
+          planId: followUpPlan.planId,
+          platform: followUpPlan.platform,
+          plannedOnly: true,
+        },
+      },
+    ],
+  });
+  const [createStep] = workflow.steps;
+
+  assert(createStep.type === "content:create", `Unexpected scheduled step type: ${createStep.type}`);
+  assert(createStep.contentFollowUpPlan?.planId === followUpPlan.planId, "Scheduled workflow should carry content follow-up plan id");
+  assert(createStep.contentFollowUpPlan?.platform === "generic_web_platform", "Scheduled workflow should carry content follow-up platform");
+  assert(createStep.contentFollowUpPlan?.plannedOnly === true, "Content follow-up plan handoff should be planned only");
+  assert(workflow.auditSummary.realSchedulerOperation === false, "Content follow-up scheduled workflow must not create scheduler");
+  assert(workflow.auditSummary.realPublishOperation === false, "Content follow-up scheduled workflow must not publish");
+
+  return "Content follow-up integrates with scheduled content:create steps as planned-only metadata";
+}
+
+async function testContentFollowUpUnsafeSignalsBlocked(): Promise<string> {
+  const result = createContentFollowUpPlan({
+    platform: "xiaohongshu",
+    goal: "Attempt unsafe follow-up content actions.",
+    signals: [
+      {
+        category: "questions",
+        summary: "Fetch comments, read real comments, then publish a reply.",
+      },
+      {
+        category: "unsupported_category",
+        summary: "Click, type, upload, submit, send, pay, and delete.",
+      },
+    ],
+  });
+
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.requiresApproval === true, "Unsafe follow-up plan should require approval/blocking");
+  assert(result.ideas.every((idea) => idea.riskLevel === "blocked"), `Expected blocked ideas, got ${result.ideas.map((idea) => idea.riskLevel).join(", ")}`);
+  assert(
+    result.blockedReasons.some((reason) => reason.toLowerCase().includes("real comments")),
+    `Blocked reasons should mention real comments: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(
+    result.blockedReasons.some((reason) => reason.toLowerCase().includes("publish")),
+    `Blocked reasons should mention publish: ${result.blockedReasons.join(", ")}`,
+  );
+  assert(
+    result.blockedReasons.some((reason) => reason.includes("Unsupported follow-up signal category")),
+    `Blocked reasons should mention unsupported category: ${result.blockedReasons.join(", ")}`,
+  );
+
+  return "Content follow-up unsafe real-read/publish/action signals are blocked";
+}
+
+async function testContentFollowUpNoRealOperationsOccur(): Promise<string> {
+  const before = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(before.status === 0, `git status before content follow-up adapter failed: ${before.stderr}`);
+
+  const result = createContentFollowUpPlan({
+    platform: "generic_web_platform",
+    goal: "Create no-op content follow-up plan.",
+  });
+
+  const after = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(after.status === 0, `git status after content follow-up adapter failed: ${after.stderr}`);
+  assert(after.stdout === before.stdout, `Content follow-up adapter changed git status:\nBefore:\n${before.stdout}\nAfter:\n${after.stdout}`);
+  assert(result.auditSummary.realNetworkOperation === false, "Content follow-up must not perform network operations");
+  assert(result.auditSummary.realBrowserOperation === false, "Content follow-up must not perform browser operations");
+  assert(result.auditSummary.realComputerOperation === false, "Content follow-up must not perform computer operations");
+  assert(result.auditSummary.realShellOperation === false, "Content follow-up must not perform shell operations");
+  assert(result.auditSummary.realSchedulerOperation === false, "Content follow-up must not perform scheduler operations");
+  assert(result.auditSummary.realPublishOperation === false, "Content follow-up must not perform publish operations");
+  assert(result.auditSummary.realReplyOperation === false, "Content follow-up must not perform reply operations");
+  assert(result.auditSummary.realCommentReadOperation === false, "Content follow-up must not read real comments");
+
+  return "Content follow-up performed no real network/browser/computer/shell/scheduler/publish/reply/comment-read operation";
+}
+
 async function testPonytailTrustedRepoAcceptedMetadataOnly(): Promise<string> {
   const manifests = await loadPonytailFixtureManifests();
   const [manifest] = manifests;
@@ -3720,6 +3976,15 @@ async function main(): Promise<void> {
   await runTest("Reply Monitor Skill v1 integrates with scheduled content reply", testReplyMonitorIntegratesWithScheduledWorkflow);
   await runTest("Reply Monitor Skill v1 unsafe steps are blocked", testReplyMonitorUnsafeStepsBlocked);
   await runTest("Reply Monitor Skill v1 performs no real network/browser/computer/scheduler/reply action", testReplyMonitorNoRealOperationsOccur);
+  await runTest("Content Follow-up Agent v1 creates deterministic follow-up plans", testContentFollowUpDeterministicPlan);
+  await runTest("Content Follow-up Agent v1 supports generic platforms", testContentFollowUpSupportsGenericPlatforms);
+  await runTest("Content Follow-up Agent v1 high-risk signals require approval", testContentFollowUpHighRiskSignalsRequireApproval);
+  await runTest("Content Follow-up Agent v1 unsupported platform is blocked", testContentFollowUpUnsupportedPlatformBlocked);
+  await runTest("Content Follow-up Agent v1 result includes required shape", testContentFollowUpResultIncludesRequiredShape);
+  await runTest("Content Follow-up Agent v1 integrates with reply monitor metadata", testContentFollowUpIntegratesWithReplyMonitorMetadata);
+  await runTest("Content Follow-up Agent v1 integrates with scheduled content create", testContentFollowUpIntegratesWithScheduledWorkflow);
+  await runTest("Content Follow-up Agent v1 unsafe signals are blocked", testContentFollowUpUnsafeSignalsBlocked);
+  await runTest("Content Follow-up Agent v1 performs no real network/browser/computer/scheduler/publish/reply action", testContentFollowUpNoRealOperationsOccur);
   await runTest("Ponytail trusted repo accepted as metadata-only source", testPonytailTrustedRepoAcceptedMetadataOnly);
   await runTest("Ponytail coding skill capabilities recognized", testPonytailCodingSkillCapabilitiesRecognized);
   await runTest("Ponytail remote code execution remains blocked", testPonytailRemoteCodeExecutionBlocked);
