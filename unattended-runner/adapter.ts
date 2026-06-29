@@ -4,6 +4,8 @@ import { createContentFollowUpPlan } from "../content-follow-up";
 import { createPlatformPublisherPlan } from "../platform-publisher";
 import { createReplyMonitorPlan } from "../reply-monitor";
 import { createScheduledWorkflowPlan } from "../scheduled-workflow";
+import { decideAutopilotApprovalPolicy } from "../autopilot-approval";
+import type { AutopilotApprovalPolicyRequest } from "../autopilot-approval";
 import type {
   UnattendedRunnerPlanRequest,
   UnattendedRunnerPlanResult,
@@ -354,10 +356,13 @@ function createNextCycleStage(
   });
 }
 
-function createStage(input: Omit<UnattendedRunnerStagePlan, "status" | "plannedOnly" | "summary">): UnattendedRunnerStagePlan {
+function createStage(
+  input: Omit<UnattendedRunnerStagePlan, "status" | "plannedOnly" | "summary" | "approvalPolicyDecision">,
+): UnattendedRunnerStagePlan {
   const blockedReasons = mergeUnique(input.blockedReasons);
   const status = blockedReasons.length > 0 ? "blocked" : input.requiresApproval ? "requires_approval" : "planned";
   const riskLevel = blockedReasons.length > 0 ? "blocked" : input.riskLevel;
+  const approvalPolicyDecision = decideAutopilotApprovalPolicy(createPolicyRequest(input.type, input.description, riskLevel));
 
   return {
     ...input,
@@ -368,8 +373,51 @@ function createStage(input: Omit<UnattendedRunnerStagePlan, "status" | "plannedO
     approvalsNeeded: mergeUnique(input.approvalsNeeded),
     permissions: mergeUnique(input.permissions),
     capabilities: mergeUnique(input.capabilities),
+    approvalPolicyDecision,
     summary: summarizeStage(input.type, status, blockedReasons),
   };
+}
+
+function createPolicyRequest(
+  stageType: UnattendedRunnerStageType,
+  description: string,
+  riskLevel: DryRunRiskLevel,
+): AutopilotApprovalPolicyRequest {
+  switch (stageType) {
+    case "scheduled_trigger":
+    case "next_cycle_plan":
+      return {
+        action: "content:schedule",
+        description,
+        riskLevel,
+        context: { plannedOnly: true },
+      };
+    case "content_creation_plan":
+    case "follow_up_content_plan":
+      return {
+        action: "content:create",
+        description,
+        riskLevel,
+        context: {
+          plannedOnly: true,
+          negativeFeedback: riskLevel === "high",
+        },
+      };
+    case "platform_publish_plan":
+      return {
+        action: "content:publish",
+        description,
+        riskLevel,
+        context: { plannedOnly: true },
+      };
+    case "reply_monitor_plan":
+      return {
+        action: "content:reply",
+        description,
+        riskLevel,
+        context: { plannedOnly: true },
+      };
+  }
 }
 
 function plannedBrowserModule(

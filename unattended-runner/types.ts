@@ -5,6 +5,7 @@ import type { PlatformPublisherPlanResult } from "../platform-publisher";
 import type { ReplyMonitorPlanResult } from "../reply-monitor";
 import type { ScheduledWorkflowPlanResult, ScheduledWorkflowSchedule } from "../scheduled-workflow";
 import type { ContentFollowUpPlanResult } from "../content-follow-up";
+import type { AutopilotApprovalPolicyResult } from "../autopilot-approval";
 
 export type UnattendedRunnerPlatform =
   | "xiaohongshu"
@@ -66,6 +67,7 @@ export type UnattendedRunnerStagePlan = {
   permissions: string[];
   capabilities: string[];
   modules: UnattendedRunnerPlannedModule[];
+  approvalPolicyDecision: AutopilotApprovalPolicyResult;
   summary: string;
 };
 

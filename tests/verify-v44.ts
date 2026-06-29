@@ -35,6 +35,7 @@ import {
   createReplyMonitorPlan,
   createContentFollowUpPlan,
   createUnattendedWorkflowRunnerPlan,
+  decideAutopilotApprovalPolicy,
   runSkillRuntimeRequest,
   selectProjectForGoal,
   shouldBlockWorkflow,
@@ -2549,6 +2550,209 @@ async function testUnattendedRunnerNoRealOperationsOccur(): Promise<string> {
   return "Unattended runner performed no real timer/scheduler/network/browser/computer/shell/publish/reply/comment-read operation";
 }
 
+async function testAutopilotApprovalLowRiskContentPlanningAutoAllowed(): Promise<string> {
+  const result = decideAutopilotApprovalPolicy({
+    action: "content:create",
+    description: "Plan local follow-up content only.",
+    riskLevel: "low",
+    context: { plannedOnly: true },
+  });
+
+  assert(result.policyDecision === "auto_allowed", `Expected auto_allowed, got ${result.policyDecision}`);
+  assert(result.requiresApproval === false, "Low-risk content:create should not require approval");
+  assert(result.riskLevel === "low", `Expected low risk, got ${result.riskLevel}`);
+  assert(result.blockedReasons.length === 0, `Low-risk planning should not be blocked: ${result.blockedReasons.join(", ")}`);
+  assert(result.permissions.includes("content:create:local"), "Result should include content:create:local permission");
+  assert(result.capabilities.includes("content_create"), "Result should include content_create capability");
+
+  return "Autopilot policy auto-allows low-risk content planning";
+}
+
+async function testAutopilotApprovalPublishReplyAndWritesRequireApproval(): Promise<string> {
+  const cases = [
+    {
+      action: "content:publish",
+      description: "Plan publish action only.",
+    },
+    {
+      action: "content:reply",
+      description: "Draft and reply after approval.",
+    },
+    {
+      action: "browser:write",
+      description: "Plan click, type, and submit only.",
+    },
+    {
+      action: "computer:act",
+      description: "Plan computer action only.",
+    },
+    {
+      action: "file:write",
+      description: "Plan file write only.",
+    },
+  ];
+
+  for (const input of cases) {
+    const result = decideAutopilotApprovalPolicy({
+      ...input,
+      riskLevel: "medium",
+      context: { plannedOnly: true },
+    });
+
+    assert(result.policyDecision === "approval_required", `${input.action} should require approval, got ${result.policyDecision}`);
+    assert(result.requiresApproval === true, `${input.action} should set requiresApproval`);
+    assert(result.blockedReasons.length === 0, `${input.action} should not be blocked: ${result.blockedReasons.join(", ")}`);
+    assert(result.approvalReason.length > 0, `${input.action} should include approval reason`);
+  }
+
+  return "Autopilot policy gates publish, reply, browser write, computer act, and file write actions";
+}
+
+async function testAutopilotApprovalDangerousActionsBlocked(): Promise<string> {
+  const cases = [
+    {
+      action: "content:delete",
+      description: "Delete content.",
+    },
+    {
+      action: "payment:act",
+      description: "Pay invoice.",
+    },
+    {
+      action: "account:login",
+      description: "Login to account.",
+    },
+    {
+      action: "computer:act",
+      description: "Change account setting.",
+      context: { accountSetting: true },
+    },
+  ];
+
+  for (const input of cases) {
+    const result = decideAutopilotApprovalPolicy({
+      ...input,
+      riskLevel: "high",
+      context: { plannedOnly: true, ...input.context },
+    });
+
+    assert(result.policyDecision === "blocked", `${input.action} should be blocked, got ${result.policyDecision}`);
+    assert(result.requiresApproval === false, "Blocked actions should not be approval-runnable");
+    assert(result.riskLevel === "blocked", `${input.action} should have blocked risk`);
+    assert(result.blockedReasons.length > 0, `${input.action} should include blocked reasons`);
+  }
+
+  return "Autopilot policy blocks delete, pay, login, and account-setting actions";
+}
+
+async function testAutopilotApprovalSensitiveNegativeFeedbackRequiresApproval(): Promise<string> {
+  const result = decideAutopilotApprovalPolicy({
+    action: "content:reply",
+    description: "Reply to sensitive negative feedback complaint.",
+    riskLevel: "medium",
+    context: {
+      plannedOnly: true,
+      sensitive: true,
+      negativeFeedback: true,
+    },
+  });
+
+  assert(result.policyDecision === "approval_required", `Expected approval_required, got ${result.policyDecision}`);
+  assert(result.requiresApproval === true, "Sensitive negative feedback reply should require approval");
+  assert(result.riskLevel === "medium", `Expected medium risk, got ${result.riskLevel}`);
+  assert(result.approvalReason.toLowerCase().includes("negative-feedback") || result.approvalReason.toLowerCase().includes("sensitive"), `Approval reason should mention sensitive/negative feedback: ${result.approvalReason}`);
+  assert(result.blockedReasons.length === 0, `Sensitive reply should be approval-gated, not blocked: ${result.blockedReasons.join(", ")}`);
+
+  return "Autopilot policy requires approval for sensitive or negative-feedback replies";
+}
+
+async function testAutopilotApprovalUnsupportedActionBlocked(): Promise<string> {
+  const result = decideAutopilotApprovalPolicy({
+    action: "unknown:act",
+    description: "Unsupported action.",
+  });
+
+  assert(result.policyDecision === "blocked", `Expected blocked, got ${result.policyDecision}`);
+  assert(result.riskLevel === "blocked", `Expected blocked risk, got ${result.riskLevel}`);
+  assert(result.blockedReasons.includes("Unsupported autopilot action: unknown:act"), `Missing unsupported action reason: ${result.blockedReasons.join(", ")}`);
+  assert(result.permissions.length === 0, "Unsupported action should not grant permissions");
+  assert(result.capabilities.length === 0, "Unsupported action should not grant capabilities");
+
+  return "Autopilot policy blocks unsupported actions";
+}
+
+async function testAutopilotApprovalResultIncludesRequiredShape(): Promise<string> {
+  const result = decideAutopilotApprovalPolicy({
+    action: "browser:read",
+    description: "Plan mock/local browser read.",
+    riskLevel: "low",
+  });
+
+  assert(typeof result.policyDecision === "string", "Result should include policyDecision");
+  assert(result.action === "browser:read", "Result should include action");
+  assert(typeof result.riskLevel === "string", "Result should include riskLevel");
+  assert(typeof result.requiresApproval === "boolean", "Result should include requiresApproval");
+  assert(Array.isArray(result.blockedReasons), "Result should include blockedReasons");
+  assert(typeof result.approvalReason === "string" && result.approvalReason.length > 0, "Result should include approvalReason");
+  assert(Array.isArray(result.capabilities) && result.capabilities.length > 0, "Result should include capabilities");
+  assert(Array.isArray(result.permissions) && result.permissions.length > 0, "Result should include permissions");
+  assert(typeof result.summary === "string" && result.summary.length > 0, "Result should include summary");
+
+  return "Autopilot policy result includes decision, action, risk, approval, blocked reasons, capabilities, permissions, and summary";
+}
+
+async function testAutopilotApprovalIntegratesWithUnattendedRunnerStages(): Promise<string> {
+  const result = createUnattendedWorkflowRunnerPlan({
+    platform: "generic_web_platform",
+    goal: "Plan unattended workflow with autopilot policy metadata.",
+    schedule: {
+      type: "one-time",
+      runAt: "2026-07-21T10:00:00.000Z",
+    },
+  });
+
+  assert(result.stages.every((stage) => stage.approvalPolicyDecision.plannedOnly === true), "Each runner stage should include planned policy decision");
+  assert(result.stages.some((stage) => stage.type === "content_creation_plan" && stage.approvalPolicyDecision.policyDecision === "auto_allowed"), "Content creation stage should be auto-allowed");
+  assert(result.stages.some((stage) => stage.type === "platform_publish_plan" && stage.approvalPolicyDecision.policyDecision === "approval_required"), "Platform publish stage should require approval");
+  assert(result.stages.some((stage) => stage.type === "reply_monitor_plan" && stage.approvalPolicyDecision.policyDecision === "approval_required"), "Reply monitor stage should require approval");
+
+  return "Autopilot policy integrates with unattended runner stages as planned-only decisions";
+}
+
+async function testAutopilotApprovalNoRealOperationsOccur(): Promise<string> {
+  const before = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(before.status === 0, `git status before autopilot approval policy failed: ${before.stderr}`);
+
+  const result = decideAutopilotApprovalPolicy({
+    action: "content:create",
+    description: "Create policy decision only.",
+    riskLevel: "low",
+  });
+
+  const after = spawnSync("git", ["status", "--short"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+
+  assert(after.status === 0, `git status after autopilot approval policy failed: ${after.stderr}`);
+  assert(after.stdout === before.stdout, `Autopilot approval policy changed git status:\nBefore:\n${before.stdout}\nAfter:\n${after.stdout}`);
+  assert(result.auditSummary.realTimerOperation === false, "Policy must not create timers");
+  assert(result.auditSummary.realSchedulerOperation === false, "Policy must not create schedulers");
+  assert(result.auditSummary.realNetworkOperation === false, "Policy must not perform network operations");
+  assert(result.auditSummary.realBrowserOperation === false, "Policy must not perform browser operations");
+  assert(result.auditSummary.realComputerOperation === false, "Policy must not perform computer operations");
+  assert(result.auditSummary.realShellOperation === false, "Policy must not perform shell operations");
+  assert(result.auditSummary.realPublishOperation === false, "Policy must not publish");
+  assert(result.auditSummary.realReplyOperation === false, "Policy must not reply");
+  assert(result.auditSummary.realCommentReadOperation === false, "Policy must not read real comments");
+
+  return "Autopilot approval policy performed no real scheduler/network/browser/computer/publish/reply operation";
+}
+
 async function testPonytailTrustedRepoAcceptedMetadataOnly(): Promise<string> {
   const manifests = await loadPonytailFixtureManifests();
   const [manifest] = manifests;
@@ -4245,6 +4449,14 @@ async function main(): Promise<void> {
   await runTest("Unattended Workflow Runner Plan v1 integrates with scheduled content create", testUnattendedRunnerIntegratesWithScheduledWorkflowMetadata);
   await runTest("Unattended Workflow Runner Plan v1 unsafe actions are blocked", testUnattendedRunnerUnsafeActionsBlocked);
   await runTest("Unattended Workflow Runner Plan v1 performs no real scheduler/browser/computer/publish/reply action", testUnattendedRunnerNoRealOperationsOccur);
+  await runTest("Autopilot Approval Policy v1 auto-allows low-risk content planning", testAutopilotApprovalLowRiskContentPlanningAutoAllowed);
+  await runTest("Autopilot Approval Policy v1 gates publish/reply/write actions", testAutopilotApprovalPublishReplyAndWritesRequireApproval);
+  await runTest("Autopilot Approval Policy v1 blocks dangerous actions", testAutopilotApprovalDangerousActionsBlocked);
+  await runTest("Autopilot Approval Policy v1 requires approval for sensitive negative feedback", testAutopilotApprovalSensitiveNegativeFeedbackRequiresApproval);
+  await runTest("Autopilot Approval Policy v1 unsupported action is blocked", testAutopilotApprovalUnsupportedActionBlocked);
+  await runTest("Autopilot Approval Policy v1 result includes required shape", testAutopilotApprovalResultIncludesRequiredShape);
+  await runTest("Autopilot Approval Policy v1 integrates with unattended runner stages", testAutopilotApprovalIntegratesWithUnattendedRunnerStages);
+  await runTest("Autopilot Approval Policy v1 performs no real scheduler/browser/computer/publish/reply action", testAutopilotApprovalNoRealOperationsOccur);
   await runTest("Ponytail trusted repo accepted as metadata-only source", testPonytailTrustedRepoAcceptedMetadataOnly);
   await runTest("Ponytail coding skill capabilities recognized", testPonytailCodingSkillCapabilitiesRecognized);
   await runTest("Ponytail remote code execution remains blocked", testPonytailRemoteCodeExecutionBlocked);

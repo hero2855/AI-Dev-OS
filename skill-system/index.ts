@@ -224,3 +224,10 @@ export type {
   UnattendedRunnerStagePlan,
   UnattendedRunnerStageType,
 } from "../unattended-runner";
+export { decideAutopilotApprovalPolicy } from "../autopilot-approval";
+export type {
+  AutopilotApprovalActionCategory,
+  AutopilotApprovalDecisionLevel,
+  AutopilotApprovalPolicyRequest,
+  AutopilotApprovalPolicyResult,
+} from "../autopilot-approval";
